@@ -1,3 +1,9 @@
 requests
 beautifulsoup4
 firebase-admin
+fastapi
+uvicorn[standard]
+python-dotenv
+firebase-admin
+requests
+beautifulsoup4
