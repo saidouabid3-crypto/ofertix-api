@@ -1,9 +1,75 @@
-requests
-beautifulsoup4
-firebase-admin
+# =========================
+# OFERTIX BACKEND CORE
+# =========================
+
 fastapi
 uvicorn[standard]
 python-dotenv
-firebase-admin
+pydantic
+pydantic-settings
+python-multipart
+
+# =========================
+# HTTP / API CLIENTS
+# =========================
+
 requests
+httpx
+aiohttp
+
+# =========================
+# FIREBASE / GOOGLE
+# =========================
+
+firebase-admin
+
+# =========================
+# SCRAPING / IMPORTERS
+# =========================
+
 beautifulsoup4
+lxml
+html5lib
+feedparser
+
+# =========================
+# DATA / PRICE CLEANING
+# =========================
+
+python-slugify
+Unidecode
+pandas
+
+# =========================
+# BACKGROUND JOBS / SCHEDULER
+# =========================
+
+APScheduler
+
+# =========================
+# SECURITY / AUTH / RATE LIMIT
+# =========================
+
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt
+slowapi
+
+# =========================
+# IMAGE / VISUAL SEARCH HELPERS
+# =========================
+
+Pillow
+
+# =========================
+# TESTING
+# =========================
+
+pytest
+pytest-asyncio
+
+# =========================
+# PRODUCTION
+# =========================
+
+gunicorn

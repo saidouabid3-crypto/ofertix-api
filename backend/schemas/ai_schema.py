@@ -1,0 +1,42 @@
+from typing import List, Optional
+from pydantic import BaseModel
+
+
+class AISearchRequest(BaseModel):
+    query: str
+    countryCode: str = "global"
+    currency: str = "EUR"
+    language: str = "auto"
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+
+class AIProduct(BaseModel):
+    id: Optional[str] = None
+    name: Optional[str] = None
+    image: Optional[str] = None
+    store: Optional[str] = None
+    category: Optional[str] = None
+    oldPrice: Optional[float] = None
+    newPrice: Optional[float] = None
+    discount: Optional[int] = None
+    isOnline: Optional[bool] = None
+    isGlobal: Optional[bool] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+
+
+class AISearchResponse(BaseModel):
+    answer: str
+    searchQuery: str
+    intent: str
+    onlineOnly: bool
+    localOnly: bool
+    nearby: bool = False
+    maxPrice: Optional[float] = None
+    category: Optional[str] = None
+    sortBy: str
+    suggestions: List[str] = []
+    buyingTips: List[str] = []
+    needsProducts: bool = True
+    products: List[AIProduct] = []
