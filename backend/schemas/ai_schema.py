@@ -1,5 +1,10 @@
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class AIHistoryMessage(BaseModel):
+    role: str
+    content: str
 
 
 class AISearchRequest(BaseModel):
@@ -9,6 +14,7 @@ class AISearchRequest(BaseModel):
     language: str = "auto"
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    history: List[AIHistoryMessage] = Field(default_factory=list)
 
 
 class AIProduct(BaseModel):
@@ -29,7 +35,7 @@ class AIProduct(BaseModel):
 class AISearchResponse(BaseModel):
     answer: str
     searchQuery: str
-    productQueries: List[str] = []
+    productQueries: List[str] = Field(default_factory=list)
     intent: str
     onlineOnly: bool
     localOnly: bool
@@ -37,7 +43,7 @@ class AISearchResponse(BaseModel):
     maxPrice: Optional[float] = None
     category: Optional[str] = None
     sortBy: str
-    suggestions: List[str] = []
-    buyingTips: List[str] = []
+    suggestions: List[str] = Field(default_factory=list)
+    buyingTips: List[str] = Field(default_factory=list)
     needsProducts: bool = True
-    products: List[AIProduct] = []
+    products: List[AIProduct] = Field(default_factory=list)

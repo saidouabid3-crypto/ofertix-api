@@ -21,6 +21,7 @@ class AIService:
         language: str = "auto",
         latitude: Optional[float] = None,
         longitude: Optional[float] = None,
+        history: Optional[list[dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         clean_query = query.strip()
 
@@ -30,36 +31,26 @@ class AIService:
         if not self.api_key:
             return self._technical_error(clean_query)
 
+        messages = self._build_messages(
+            query=clean_query,
+            country_code=country_code,
+            currency=currency,
+            language=language,
+            latitude=latitude,
+            longitude=longitude,
+            history=history or [],
+        )
+
         payload = {
             "model": self.model,
-            "temperature": 0.45,
-            "max_tokens": 1100,
+            "temperature": 0.42,
+            "max_tokens": 1200,
             "response_format": {"type": "json_object"},
-            "messages": [
-                {
-                    "role": "system",
-                    "content": self._system_prompt(),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "message": clean_query,
-                            "countryCode": country_code,
-                            "currency": currency,
-                            "appLanguage": language,
-                            "latitude": latitude,
-                            "longitude": longitude,
-                            "important": "Understand the user language yourself. Generate productQueries yourself. Do not rely on the app to translate.",
-                        },
-                        ensure_ascii=False,
-                    ),
-                },
-            ],
+            "messages": messages,
         }
 
         try:
-            async with httpx.AsyncClient(timeout=35) as client:
+            async with httpx.AsyncClient(timeout=40) as client:
                 response = await client.post(
                     GROQ_URL,
                     headers={
@@ -80,58 +71,112 @@ class AIService:
         except Exception:
             return self._technical_error(clean_query)
 
+    def _build_messages(
+        self,
+        query: str,
+        country_code: str,
+        currency: str,
+        language: str,
+        latitude: Optional[float],
+        longitude: Optional[float],
+        history: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        messages: list[dict[str, str]] = [
+            {
+                "role": "system",
+                "content": self._system_prompt(),
+            }
+        ]
+
+        for item in history[-10:]:
+            role = str(item.get("role", "")).strip()
+            content = str(item.get("content", "")).strip()
+
+            if role not in ["user", "assistant"]:
+                continue
+
+            if not content:
+                continue
+
+            messages.append(
+                {
+                    "role": role,
+                    "content": content,
+                }
+            )
+
+        messages.append(
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "message": query,
+                        "countryCode": country_code,
+                        "currency": currency,
+                        "appLanguage": language,
+                        "latitude": latitude,
+                        "longitude": longitude,
+                        "instruction": "This is the exact current user message. Use previous messages only as context. Understand the current message yourself. Generate productQueries yourself. The Flutter app will not translate or guess product keywords.",
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        )
+
+        return messages
+
     def _system_prompt(self) -> str:
         return """
-You are Ofertix AI, a smart global shopping assistant inside the Ofertix app.
+You are Ofertix AI, a top-tier global shopping assistant inside the Ofertix app.
 
-Your job:
-- Understand the user's message naturally in any language.
-- Detect the language from the user's message.
-- Answer in the same language used by the user.
-- If the user writes Moroccan Darija with Latin letters, understand it and answer naturally.
-- Give helpful shopping advice.
-- Ask follow-up questions when the request is not clear.
-- When the user asks for products, generate useful product search queries for the product database.
+You understand the user naturally in ANY language:
+Arabic, Moroccan Darija written in Latin letters, Spanish, English, French, Italian, Portuguese, German, etc.
 
-Very important:
-The app will NOT translate or map words.
+Core rules:
+- Reply in the same language used by the current user message.
+- If the user uses Moroccan Darija with Latin letters, understand it naturally and answer in Moroccan Darija or clear Arabic-style Darija.
+- Use chat history only as context. The current user message is the main request.
+- Never confuse system/context text with the user's real message.
+- Do not invent real product availability, prices, or stores.
+- Product cards will be fetched later by Ofertix ProductService.
+- Your job is to understand, advise, ask useful follow-up questions, and generate product search queries.
+
+Very important about products:
+The Flutter app will NOT translate or map words.
 You must generate productQueries yourself.
-productQueries must contain short useful search keywords that can match product names in an international product database.
-If the user writes Arabic, Darija, French, Spanish, English, German, etc., you still generate productQueries using useful searchable terms, often in English and Spanish too.
+productQueries must be practical search phrases for an international product database.
+When the user asks for a product in Arabic/Darija/French/etc., generate productQueries in useful searchable forms, often English + Spanish + brand/model terms.
 
 Examples:
-User asks in Arabic for سماعات:
-productQueries could include:
-["headphones", "bluetooth headphones", "earbuds", "auriculares", "airpods"]
+- User: "اعطني جميع السماعات الموجودة"
+  productQueries: ["headphones", "bluetooth headphones", "earbuds", "auriculares", "airpods", "sony headphones"]
+- User: "bghit sma3at rkhisa"
+  productQueries: ["cheap headphones", "bluetooth earbuds", "auriculares baratos", "headphones", "earbuds"]
+- User: "auriculares baratos"
+  productQueries: ["auriculares baratos", "auriculares bluetooth", "headphones", "earbuds"]
+- User: "WH-1000XM5"
+  productQueries: ["WH-1000XM5", "sony WH-1000XM5", "sony headphones", "auriculares sony"]
+- User: "اعطني كل العروض الموجودة"
+  productQueries: ["iphone", "samsung", "xiaomi", "headphones", "auriculares", "smartwatch", "laptop", "gaming", "tv"]
 
-User asks in Darija "bghit sma3at rkhisa":
-productQueries could include:
-["cheap headphones", "bluetooth earbuds", "auriculares baratos", "headphones", "earbuds"]
+When needsProducts should be true:
+- User asks for products.
+- User asks for offers/deals/discounts.
+- User chooses a suggestion that represents a product/category.
+- User says yes to seeing available products.
+- User asks "give me all available..." or similar.
 
-User asks "اعطني كل العروض الموجودة":
-productQueries should include broad popular categories:
-["iphone", "samsung", "xiaomi", "headphones", "auriculares", "smartwatch", "laptop", "gaming", "tv"]
+When needsProducts should be false:
+- Greeting only.
+- General advice only without product intent.
+- You need a critical clarification before searching.
 
-User asks "WH-1000XM5":
-productQueries should include:
-["WH-1000XM5", "sony WH-1000XM5", "sony headphones", "auriculares sony"]
-
-Rules:
-- Do not invent real products, prices, stores, or availability.
-- Product results are fetched later by Ofertix ProductService.
-- Your answer can ask questions or give advice.
-- needsProducts must be true whenever the app should search products.
-- productQueries must be non-empty when needsProducts is true.
-- searchQuery is the best single query.
-- productQueries is a list of multiple queries to try.
-- suggestions are quick options the user can tap.
-- buyingTips are short useful tips.
-- Return ONLY valid JSON. No markdown. No extra text.
+Return ONLY valid JSON. No markdown. No extra text.
 
 Required JSON:
 {
-  "answer": "natural answer in the same language as user",
-  "searchQuery": "best single product search query, empty if no product search needed",
+  "answer": "natural answer in the same language as the current user message",
+  "searchQuery": "best single product search query, empty if product search is not needed",
   "productQueries": ["query 1", "query 2", "query 3"],
   "intent": "greeting | search | compare | cheap | premium | local | online | discount | advice | unknown",
   "onlineOnly": false,
@@ -140,10 +185,17 @@ Required JSON:
   "maxPrice": null,
   "category": null,
   "sortBy": "best | cheapest | discount | nearby | premium",
-  "suggestions": ["short quick option", "short quick option", "short quick option"],
-  "buyingTips": ["short practical tip", "short practical tip", "short practical tip"],
+  "suggestions": ["quick option 1", "quick option 2", "quick option 3"],
+  "buyingTips": ["short practical tip 1", "short practical tip 2", "short practical tip 3"],
   "needsProducts": true
 }
+
+Output quality:
+- answer must never be empty unless there is a technical issue.
+- productQueries must be non-empty when needsProducts is true.
+- suggestions must be short tappable choices.
+- buyingTips must be short and practical.
+- If user asks for all available products in a category, do not keep asking forever. Generate productQueries and set needsProducts true.
 """
 
     def _normalize(self, data: Dict[str, Any], fallback_query: str) -> Dict[str, Any]:
@@ -191,7 +243,7 @@ Required JSON:
         if needs_products and not product_queries:
             product_queries = [search_query or fallback_query]
 
-        product_queries = self._unique_list(product_queries, max_items=10)
+        product_queries = self._unique_list(product_queries, max_items=12)
 
         return {
             "answer": answer,
@@ -272,9 +324,9 @@ Required JSON:
             if text:
                 items.append(text)
 
-        return self._unique_list(items, max_items=10)
+        return self._unique_list(items, max_items=12)
 
-    def _unique_list(self, items: list[str], max_items: int = 10) -> list[str]:
+    def _unique_list(self, items: list[str], max_items: int = 12) -> list[str]:
         result = []
 
         for item in items:

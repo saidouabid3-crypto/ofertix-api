@@ -11,6 +11,14 @@ router = APIRouter(
 
 @router.post("/search", response_model=AISearchResponse)
 async def ai_search(payload: AISearchRequest):
+    history = [
+        {
+            "role": item.role,
+            "content": item.content,
+        }
+        for item in payload.history
+    ]
+
     return await ai_service.analyze_query(
         query=payload.query,
         country_code=payload.countryCode,
@@ -18,4 +26,5 @@ async def ai_search(payload: AISearchRequest):
         language=payload.language,
         latitude=payload.latitude,
         longitude=payload.longitude,
+        history=history,
     )
