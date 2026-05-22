@@ -29,6 +29,7 @@ class AIProduct(BaseModel):
 class AISearchResponse(BaseModel):
     answer: str
     searchQuery: str
+    productQueries: List[str] = []
     intent: str
     onlineOnly: bool
     localOnly: bool

@@ -25,15 +25,15 @@ class AIService:
         clean_query = query.strip()
 
         if not clean_query:
-            return self._empty_response()
+            return self._empty()
 
         if not self.api_key:
-            return self._fallback_response(clean_query)
+            return self._technical_error(clean_query)
 
         payload = {
             "model": self.model,
             "temperature": 0.45,
-            "max_tokens": 900,
+            "max_tokens": 1100,
             "response_format": {"type": "json_object"},
             "messages": [
                 {
@@ -50,23 +50,7 @@ class AIService:
                             "appLanguage": language,
                             "latitude": latitude,
                             "longitude": longitude,
-                            "appContext": {
-                                "name": "Ofertix",
-                                "type": "global shopping deals app",
-                                "features": [
-                                    "AI shopping assistant",
-                                    "product search",
-                                    "voice search",
-                                    "visual search",
-                                    "barcode scan",
-                                    "online stores",
-                                    "local stores",
-                                    "price alerts",
-                                    "cashback",
-                                    "rewards",
-                                    "affiliate deals",
-                                ],
-                            },
+                            "important": "Understand the user language yourself. Generate productQueries yourself. Do not rely on the app to translate.",
                         },
                         ensure_ascii=False,
                     ),
@@ -85,8 +69,7 @@ class AIService:
                     json=payload,
                 )
 
-            if response.status_code >= 400:
-                return self._fallback_response(clean_query)
+            response.raise_for_status()
 
             data = response.json()
             content = data["choices"][0]["message"]["content"]
@@ -95,38 +78,61 @@ class AIService:
             return self._normalize(parsed, clean_query)
 
         except Exception:
-            return self._fallback_response(clean_query)
+            return self._technical_error(clean_query)
 
     def _system_prompt(self) -> str:
         return """
-You are Ofertix AI, a powerful global shopping expert inside a deals app.
+You are Ofertix AI, a smart global shopping assistant inside the Ofertix app.
 
-You must do everything intelligently:
-- Understand the user's message in any language.
-- Detect the user's language from the message itself.
-- Reply naturally in the same language used by the user.
-- If the user writes Moroccan Darija with Latin letters, understand it and answer naturally in Moroccan Darija or Arabic-style Darija.
-- Do not use fixed scripted answers.
-- Behave like a real expert shopping assistant.
-- Help with buying advice, product comparison, price strategy, local stores, online deals, discounts, alternatives, warnings, and recommendations.
-- If the user only greets you, answer naturally and guide them to ask for a product or deal.
-- If the user asks for a product, extract a clean product search query.
-- If the user asks for cheap products, detect cheapest intent.
-- If the user asks for discounts, detect discount intent.
-- If the user asks for local or nearby shops, detect local and nearby intent.
-- If the user mentions Amazon, AliExpress, Temu, online, detect online intent.
-- If the user mentions a budget, extract maxPrice.
-- If the request is vague, ask a useful follow-up question instead of inventing product results.
+Your job:
+- Understand the user's message naturally in any language.
+- Detect the language from the user's message.
+- Answer in the same language used by the user.
+- If the user writes Moroccan Darija with Latin letters, understand it and answer naturally.
+- Give helpful shopping advice.
+- Ask follow-up questions when the request is not clear.
+- When the user asks for products, generate useful product search queries for the product database.
+
+Very important:
+The app will NOT translate or map words.
+You must generate productQueries yourself.
+productQueries must contain short useful search keywords that can match product names in an international product database.
+If the user writes Arabic, Darija, French, Spanish, English, German, etc., you still generate productQueries using useful searchable terms, often in English and Spanish too.
+
+Examples:
+User asks in Arabic for سماعات:
+productQueries could include:
+["headphones", "bluetooth headphones", "earbuds", "auriculares", "airpods"]
+
+User asks in Darija "bghit sma3at rkhisa":
+productQueries could include:
+["cheap headphones", "bluetooth earbuds", "auriculares baratos", "headphones", "earbuds"]
+
+User asks "اعطني كل العروض الموجودة":
+productQueries should include broad popular categories:
+["iphone", "samsung", "xiaomi", "headphones", "auriculares", "smartwatch", "laptop", "gaming", "tv"]
+
+User asks "WH-1000XM5":
+productQueries should include:
+["WH-1000XM5", "sony WH-1000XM5", "sony headphones", "auriculares sony"]
+
+Rules:
 - Do not invent real products, prices, stores, or availability.
-- Product results will be fetched later by Ofertix ProductService.
-- Your job is to understand, advise, suggest searches, give buying tips, and return structured shopping data.
+- Product results are fetched later by Ofertix ProductService.
+- Your answer can ask questions or give advice.
+- needsProducts must be true whenever the app should search products.
+- productQueries must be non-empty when needsProducts is true.
+- searchQuery is the best single query.
+- productQueries is a list of multiple queries to try.
+- suggestions are quick options the user can tap.
+- buyingTips are short useful tips.
+- Return ONLY valid JSON. No markdown. No extra text.
 
-Return ONLY valid JSON. No markdown. No extra text.
-
-Required JSON schema:
+Required JSON:
 {
-  "answer": "natural helpful expert answer in the same language as the user",
-  "searchQuery": "short clean product search query, or empty if no product search is needed",
+  "answer": "natural answer in the same language as user",
+  "searchQuery": "best single product search query, empty if no product search needed",
+  "productQueries": ["query 1", "query 2", "query 3"],
   "intent": "greeting | search | compare | cheap | premium | local | online | discount | advice | unknown",
   "onlineOnly": false,
   "localOnly": false,
@@ -134,72 +140,81 @@ Required JSON schema:
   "maxPrice": null,
   "category": null,
   "sortBy": "best | cheapest | discount | nearby | premium",
-  "suggestions": [
-    "short product/search suggestion",
-    "short product/search suggestion",
-    "short product/search suggestion"
-  ],
-  "buyingTips": [
-    "short practical buying tip",
-    "short practical buying tip",
-    "short practical buying tip"
-  ],
+  "suggestions": ["short quick option", "short quick option", "short quick option"],
+  "buyingTips": ["short practical tip", "short practical tip", "short practical tip"],
   "needsProducts": true
 }
-
-Rules:
-- answer must never be empty.
-- answer must be conversational and expert.
-- suggestions must be short search phrases.
-- buyingTips must be practical and useful.
-- needsProducts must be false for greeting, vague advice, or general questions with no product.
-- needsProducts must be true when a product search should happen.
-- searchQuery must be clean and useful for database search.
-- sortBy must match intent.
 """
 
     def _normalize(self, data: Dict[str, Any], fallback_query: str) -> Dict[str, Any]:
-        intent = self._safe_string(data.get("intent"), "search")
+        answer = self._text(data.get("answer"))
+        search_query = self._text(data.get("searchQuery"))
+        product_queries = self._list_text(data.get("productQueries"))
 
-        search_query = self._safe_string(data.get("searchQuery"), "")
-        if not search_query and intent not in ["greeting", "advice", "unknown"]:
-            search_query = fallback_query
+        intent = self._text(data.get("intent")) or "unknown"
+        sort_by = self._text(data.get("sortBy")) or "best"
 
-        sort_by = self._safe_string(data.get("sortBy"), "best")
-        if sort_by not in ["best", "cheapest", "discount", "nearby", "premium"]:
+        allowed_intents = {
+            "greeting",
+            "search",
+            "compare",
+            "cheap",
+            "premium",
+            "local",
+            "online",
+            "discount",
+            "advice",
+            "unknown",
+        }
+
+        allowed_sort = {
+            "best",
+            "cheapest",
+            "discount",
+            "nearby",
+            "premium",
+        }
+
+        if intent not in allowed_intents:
+            intent = "unknown"
+
+        if sort_by not in allowed_sort:
             sort_by = "best"
-
-        answer = self._safe_string(data.get("answer"), "")
-        if not answer:
-            answer = "I understood your request. I can help you compare options and find the best deal."
-
-        suggestions = self._safe_list(data.get("suggestions"))
-        buying_tips = self._safe_list(data.get("buyingTips"))
 
         needs_products = data.get("needsProducts")
         if not isinstance(needs_products, bool):
-            needs_products = bool(search_query)
+            needs_products = bool(search_query or product_queries)
+
+        if needs_products and not search_query:
+            search_query = product_queries[0] if product_queries else fallback_query
+
+        if needs_products and not product_queries:
+            product_queries = [search_query or fallback_query]
+
+        product_queries = self._unique_list(product_queries, max_items=10)
 
         return {
             "answer": answer,
             "searchQuery": search_query,
+            "productQueries": product_queries,
             "intent": intent,
             "onlineOnly": bool(data.get("onlineOnly", False)),
             "localOnly": bool(data.get("localOnly", False)),
             "nearby": bool(data.get("nearby", False)),
-            "maxPrice": self._to_float_or_none(data.get("maxPrice")),
-            "category": self._nullable_string(data.get("category")),
+            "maxPrice": self._number_or_none(data.get("maxPrice")),
+            "category": self._nullable_text(data.get("category")),
             "sortBy": sort_by,
-            "suggestions": suggestions,
-            "buyingTips": buying_tips,
+            "suggestions": self._list_text(data.get("suggestions")),
+            "buyingTips": self._list_text(data.get("buyingTips")),
             "needsProducts": needs_products,
             "products": [],
         }
 
-    def _empty_response(self) -> Dict[str, Any]:
+    def _empty(self) -> Dict[str, Any]:
         return {
-            "answer": "Tell me what you want to buy and I will help you find the best option.",
+            "answer": "",
             "searchQuery": "",
+            "productQueries": [],
             "intent": "unknown",
             "onlineOnly": False,
             "localOnly": False,
@@ -213,10 +228,11 @@ Rules:
             "products": [],
         }
 
-    def _fallback_response(self, query: str) -> Dict[str, Any]:
+    def _technical_error(self, query: str) -> Dict[str, Any]:
         return {
-            "answer": "I understood your request. I will search related products and help you compare the best options.",
-            "searchQuery": query.strip(),
+            "answer": "",
+            "searchQuery": query,
+            "productQueries": [query],
             "intent": "search",
             "onlineOnly": False,
             "localOnly": False,
@@ -224,37 +240,54 @@ Rules:
             "maxPrice": None,
             "category": None,
             "sortBy": "best",
-            "suggestions": [query.strip()],
-            "buyingTips": [
-                "Compare the final price including delivery.",
-                "Check seller reliability and return policy.",
-                "Avoid offers with unclear warranty.",
-            ],
+            "suggestions": [],
+            "buyingTips": [],
             "needsProducts": True,
             "products": [],
         }
 
-    def _safe_string(self, value: Any, fallback: str) -> str:
+    def _text(self, value: Any) -> str:
         if value is None:
-            return fallback
+            return ""
 
         text = str(value).strip()
-        return text if text else fallback
 
-    def _safe_list(self, value: Any, max_items: int = 5) -> list[str]:
+        if text.lower() == "null":
+            return ""
+
+        return text
+
+    def _nullable_text(self, value: Any) -> Optional[str]:
+        text = self._text(value)
+        return text if text else None
+
+    def _list_text(self, value: Any) -> list[str]:
         if not isinstance(value, list):
             return []
 
-        result = []
+        items = []
 
         for item in value:
-            text = str(item).strip()
-            if text and text.lower() != "null":
-                result.append(text)
+            text = self._text(item)
+            if text:
+                items.append(text)
+
+        return self._unique_list(items, max_items=10)
+
+    def _unique_list(self, items: list[str], max_items: int = 10) -> list[str]:
+        result = []
+
+        for item in items:
+            clean = item.strip()
+            if not clean:
+                continue
+
+            if not any(existing.lower() == clean.lower() for existing in result):
+                result.append(clean)
 
         return result[:max_items]
 
-    def _to_float_or_none(self, value: Any) -> Optional[float]:
+    def _number_or_none(self, value: Any) -> Optional[float]:
         if value is None:
             return None
 
@@ -268,17 +301,6 @@ Rules:
                 return None
 
         return None
-
-    def _nullable_string(self, value: Any) -> Optional[str]:
-        if value is None:
-            return None
-
-        text = str(value).strip()
-
-        if not text or text.lower() == "null":
-            return None
-
-        return text
 
 
 ai_service = AIService()
