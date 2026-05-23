@@ -73,3 +73,6 @@ pytest-asyncio
 # =========================
 
 gunicorn
+
+cloudinary
+python-multipart
