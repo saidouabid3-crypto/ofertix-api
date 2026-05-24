@@ -10,7 +10,8 @@ from routes.video_deals import router as video_deals_router
 
 app = FastAPI(
     title="Ofertix API",
-    version="5.1.0",
+    description="Backend API for Ofertix products, AI search, and optimized video deals.",
+    version="5.2.0",
 )
 
 app.add_middleware(
@@ -21,11 +22,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Existing routes
+# Products routes
 app.include_router(products_router)
+
+# AI search routes
 app.include_router(ai_search_router)
 
-# New Cloudinary video upload route
+# Cloudinary optimized video deals routes
 app.include_router(video_deals_router)
 
 
@@ -34,16 +37,20 @@ def home():
     return {
         "app": "Ofertix API",
         "status": "running",
-        "version": "5.1.0",
-        "routes": [
-            "/products",
-            "/api/ai/search",
-            "/video-deals/create",
-        ],
+        "version": "5.2.0",
+        "message": "Ofertix backend is running successfully.",
+        "routes": {
+            "products": "/products",
+            "ai_search": "/api/ai/search",
+            "video_deals_create": "/video-deals/create",
+            "health": "/health",
+        },
         "features": [
             "products",
             "ai_search",
             "cloudinary_video_upload",
+            "optimized_reels_video",
+            "video_thumbnail_generation",
         ],
     }
 
@@ -53,5 +60,5 @@ def health():
     return {
         "status": "ok",
         "service": "ofertix-api",
-        "version": "5.1.0",
+        "version": "5.2.0",
     }
