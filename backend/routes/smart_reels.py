@@ -1,10 +1,14 @@
-from fastapi import APIRouter, HTTPException, Query
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
+
 from schemas.smart_reel_schema import (
     SmartReelCreate,
     SmartReelOut,
     SmartReelFeedResponse,
 )
 from services.smart_reel_service import smart_reel_service
+from services.cloudinary_upload_service import cloudinary_upload_service
 
 router = APIRouter(prefix="/smart-reels", tags=["Smart Reels"])
 
@@ -19,6 +23,48 @@ async def get_smart_reels_feed(
 
 @router.post("", response_model=SmartReelOut)
 async def create_smart_reel(payload: SmartReelCreate):
+    return smart_reel_service.create_reel(payload)
+
+
+@router.post("/upload", response_model=SmartReelOut)
+async def upload_smart_reel(
+    video: UploadFile = File(...),
+    title: str = Form(...),
+    description: str = Form(""),
+    store: str = Form(...),
+    current_price: float = Form(...),
+    old_price: Optional[float] = Form(None),
+    currency: str = Form("EUR"),
+    affiliate_url: Optional[str] = Form(None),
+    product_id: Optional[str] = Form(None),
+):
+    if not video.content_type or not video.content_type.startswith("video/"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only video files are allowed",
+        )
+
+    upload_result = cloudinary_upload_service.upload_reel_video(video)
+    video_url = upload_result.get("secure_url")
+
+    if not video_url:
+        raise HTTPException(
+            status_code=500,
+            detail="Video upload failed",
+        )
+
+    payload = SmartReelCreate(
+        title=title,
+        description=description,
+        store=store,
+        current_price=current_price,
+        old_price=old_price,
+        currency=currency,
+        video_url=video_url,
+        affiliate_url=affiliate_url,
+        product_id=product_id,
+    )
+
     return smart_reel_service.create_reel(payload)
 
 
