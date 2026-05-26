@@ -1,3 +1,4 @@
+from core.firebase import db
 from repositories.smart_reel_repository import smart_reel_repository
 from services.cloudinary_service import CloudinaryService
 from services.deal_score_service import DealScoreService
@@ -5,26 +6,55 @@ from services.fake_discount_service import FakeDiscountService
 
 
 class SmartReelService:
-    def create_reel(self, payload):
+    def _resolve_user_profile(self, current_user: dict | None) -> dict:
+        if not current_user:
+            return {
+                'uid': 'mobile_user',
+                'name': 'Ofertix User',
+                'photo_url': '',
+            }
+
+        uid = current_user.get('uid') or ''
+        name = current_user.get('name') or current_user.get('email', '').split('@')[0] or 'Ofertix User'
+        photo_url = current_user.get('picture') or ''
+
+        if uid:
+            snap = db.collection('users').document(uid).get()
+            if snap.exists:
+                data = snap.to_dict() or {}
+                name = data.get('display_name') or data.get('displayName') or name
+                photo_url = data.get('photo_url') or data.get('photoUrl') or photo_url
+
+        return {
+            'uid': uid or 'mobile_user',
+            'name': str(name or 'Ofertix User'),
+            'photo_url': str(photo_url or ''),
+        }
+
+    def create_reel(self, payload, current_user: dict | None = None):
+        user_profile = self._resolve_user_profile(current_user)
+
         current_price = payload.current_price
         old_price = payload.old_price
         discount_percent = 0
         if old_price and old_price > current_price:
             discount_percent = int(((old_price - current_price) / old_price) * 100)
+
         raw_video_url = str(payload.video_url)
         optimized_video = CloudinaryService.optimize_video_url(raw_video_url)
         thumbnail = CloudinaryService.generate_thumbnail_url(raw_video_url)
         hls_url = CloudinaryService.generate_hls_url(raw_video_url)
         deal_score = DealScoreService.calculate_score(current_price=current_price, old_price=old_price)
         fake_risk = FakeDiscountService.detect_risk(current_price=current_price, old_price=old_price)
+
         data = {
             'product_id': payload.product_id,
             'title': payload.title,
             'description': payload.description or '',
             'store': payload.store,
-            'creator_id': payload.creator_id or 'mobile_user',
-            'creator_name': payload.creator_name or 'Ofertix User',
-            'creator_avatar_url': payload.creator_avatar_url or '',
+            'creator_id': user_profile['uid'],
+            'creator_name': user_profile['name'],
+            'creator_avatar_url': user_profile['photo_url'],
             'current_price': current_price,
             'old_price': old_price,
             'currency': payload.currency,
@@ -41,7 +71,8 @@ class SmartReelService:
         }
         return smart_reel_repository.create(data)
 
-    def update_reel(self, reel_id: str, payload, actor_id: str = 'mobile_user'):
+    def update_reel(self, reel_id: str, payload, current_user: dict):
+        actor_id = current_user['uid']
         existing = smart_reel_repository.get_by_id(reel_id)
         if not existing:
             return None
@@ -91,17 +122,17 @@ class SmartReelService:
 
         return smart_reel_repository.update(reel_id, data, actor_id=actor_id)
 
-    def delete_reel(self, reel_id: str, actor_id: str = 'mobile_user'):
-        return smart_reel_repository.delete(reel_id, actor_id=actor_id)
+    def delete_reel(self, reel_id: str, current_user: dict):
+        return smart_reel_repository.delete(reel_id, actor_id=current_user['uid'])
 
-    def send_message(self, reel_id: str, payload):
+    def send_message(self, reel_id: str, payload, current_user: dict):
+        user_profile = self._resolve_user_profile(current_user)
         return smart_reel_repository.create_message(
             reel_id=reel_id,
-            sender_id=payload.sender_id,
-            sender_name=payload.sender_name,
+            sender_id=user_profile['uid'],
+            sender_name=user_profile['name'],
             text=payload.text,
         )
-
 
     def get_feed(self, limit: int = 10, cursor: str | None = None, viewer_id: str | None = None):
         items, next_cursor, has_more = smart_reel_repository.list_feed(limit=limit, cursor=cursor, viewer_id=viewer_id)
@@ -122,14 +153,20 @@ class SmartReelService:
     def report(self, reel_id: str):
         return smart_reel_repository.increment(reel_id, 'reports')
 
-    def add_comment(self, reel_id: str, text: str, user_id: str = 'mobile_user', user_name: str = 'Ofertix User'):
-        return smart_reel_repository.add_comment(reel_id=reel_id, text=text, user_id=user_id, user_name=user_name)
+    def add_comment(self, reel_id: str, text: str, current_user: dict):
+        user_profile = self._resolve_user_profile(current_user)
+        return smart_reel_repository.add_comment(
+            reel_id=reel_id,
+            text=text,
+            user_id=user_profile['uid'],
+            user_name=user_profile['name'],
+        )
 
     def get_comments(self, reel_id: str, limit: int = 50):
         return {'items': smart_reel_repository.list_comments(reel_id=reel_id, limit=limit)}
 
-    def follow_creator(self, creator_id: str, follower_id: str = 'mobile_user'):
-        return smart_reel_repository.toggle_follow(creator_id=creator_id, follower_id=follower_id)
+    def follow_creator(self, creator_id: str, current_user: dict):
+        return smart_reel_repository.toggle_follow(creator_id=creator_id, follower_id=current_user['uid'])
 
 
 smart_reel_service = SmartReelService()

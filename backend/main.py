@@ -16,6 +16,8 @@ from routes.ai_brain import router as ai_brain_router
 from routes.i18n import router as i18n_router
 from routes.marketplace import router as marketplace_router
 from routes.ads import router as ads_router
+from routes.mystery_box import router as mystery_box_router
+from routes.profiles import router as profiles_router
 
 app = FastAPI(
     title="Ofertix API",
@@ -38,11 +40,13 @@ app.include_router(smart_reels_router)
 
 # Super-app routes
 app.include_router(messages_router)
+app.include_router(profiles_router)
 app.include_router(community_router)
 app.include_router(coupons_router)
 app.include_router(user_deals_router)
 app.include_router(geo_alerts_router)
 app.include_router(ai_brain_router)
+app.include_router(mystery_box_router)
 app.include_router(i18n_router)
 
 # Pro Max additions
@@ -61,6 +65,7 @@ def home():
             "products": "/products",
             "ai_search": "/api/ai/search",
             "ai_brain": "/ai/brain/analyze",
+            "mystery_box": "/mystery-box/today",
             "smart_reels_feed": "/smart-reels/feed",
             "messages": "/messages/conversations",
             "community_vote": "/community/vote",
@@ -79,7 +84,7 @@ def home():
         "features": [
             "products",
             "groq_ai_search_preserved",
-            "lightweight_ai_deal_brain",
+            "ai_deal_brain_pro",
             "smart_deal_reels_preserved",
             "creator_profiles",
             "messages",
@@ -91,6 +96,8 @@ def home():
             "marketplace_users_sell",
             "ads_revenue_estimator",
             "cloudinary_optimized_video",
+            "blind_deal_box",
+            "ai_deal_brain_pro",
             "fake_discount_detection",
             "rewards_ready_events",
         ],

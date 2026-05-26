@@ -2,17 +2,34 @@ from repositories.message_repository import message_repository
 
 
 class MessageService:
-    def open_conversation(self, buyer_id: str, creator_id: str, reel_id: str = 'profile_contact', reel_title: str = 'Contacto desde Ofertix'):
-        return message_repository.open_conversation(buyer_id=buyer_id, creator_id=creator_id, reel_id=reel_id, reel_title=reel_title)
+    def start_conversation(self, payload, current_user: dict):
+        return message_repository.start_conversation(payload, current_user=current_user)
 
-    def send_message(self, conversation_id: str, sender_id: str, receiver_id: str, text: str):
-        return message_repository.send_message(conversation_id=conversation_id, sender_id=sender_id, receiver_id=receiver_id, text=text)
+    def get_inbox(self, current_user: dict, limit: int = 50):
+        return {'items': message_repository.get_inbox(current_user=current_user, limit=limit)}
 
-    def list_messages(self, conversation_id: str, limit: int = 80):
-        return {'items': message_repository.list_messages(conversation_id=conversation_id, limit=limit)}
+    def get_conversation_messages(self, conversation_id: str, current_user: dict, limit: int = 80):
+        return {
+            'items': message_repository.list_messages(
+                conversation_id=conversation_id,
+                current_user=current_user,
+                limit=limit,
+            )
+        }
 
-    def list_user_conversations(self, user_id: str, limit: int = 50):
-        return {'items': message_repository.list_user_conversations(user_id=user_id, limit=limit)}
+    def send_message(self, conversation_id: str, payload, current_user: dict):
+        sender_id = current_user['uid']
+        sender_name = current_user.get('name') or current_user.get('email', '').split('@')[0] or 'Ofertix User'
+
+        return message_repository.add_message(
+            conversation_id=conversation_id,
+            sender_id=sender_id,
+            sender_name=sender_name,
+            text=payload.text,
+        )
+
+    def mark_read(self, conversation_id: str, current_user: dict):
+        return message_repository.mark_read(conversation_id=conversation_id, current_user=current_user)
 
 
 message_service = MessageService()

@@ -25,6 +25,11 @@ class SmartReelCreate(BaseModel):
             raise ValueError('Invalid default value. Please provide real data.')
         return value.strip()
 
+    @field_validator('currency')
+    @classmethod
+    def clean_currency(cls, value: str):
+        return value.strip().upper()
+
     @field_validator('old_price')
     @classmethod
     def old_price_must_be_valid(cls, value, info):
@@ -63,8 +68,6 @@ class SmartReelUpdate(BaseModel):
 
 
 class SmartReelMessageCreate(BaseModel):
-    sender_id: str = Field(default='mobile_user', max_length=120)
-    sender_name: str = Field(default='Ofertix User', max_length=80)
     text: str = Field(..., min_length=1, max_length=700)
 
     @field_validator('text')
@@ -130,8 +133,6 @@ class SmartReelFeedResponse(BaseModel):
 class SmartReelCommentCreate(BaseModel):
     reel_id: Optional[str] = None
     text: str = Field(..., min_length=1, max_length=500)
-    user_id: str = Field(default='mobile_user', max_length=120)
-    user_name: str = Field(default='Ofertix User', max_length=80)
 
     @field_validator('text')
     @classmethod

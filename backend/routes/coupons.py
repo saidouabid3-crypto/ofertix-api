@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from core.auth import require_user
 from schemas.coupon_schema import CouponCreate, CouponListResponse, CouponOut, CouponVerifyCreate
 from services.coupon_service import coupon_service
 
@@ -16,13 +17,15 @@ async def list_coupons(
 
 
 @router.post('', response_model=CouponOut)
-async def create_coupon(payload: CouponCreate):
-    return coupon_service.create(payload)
+async def create_coupon(payload: CouponCreate, current_user: dict = Depends(require_user)):
+    secured = payload.model_copy(update={'created_by': current_user['uid']})
+    return coupon_service.create(secured)
 
 
 @router.post('/{coupon_id}/verify', response_model=CouponOut)
-async def verify_coupon(coupon_id: str, payload: CouponVerifyCreate):
-    coupon = coupon_service.verify(coupon_id=coupon_id, works=payload.works)
+async def verify_coupon(coupon_id: str, payload: CouponVerifyCreate, current_user: dict = Depends(require_user)):
+    secured = payload.model_copy(update={'user_id': current_user['uid']})
+    coupon = coupon_service.verify(coupon_id=coupon_id, works=secured.works)
     if not coupon:
         raise HTTPException(status_code=404, detail='Coupon not found')
     return coupon

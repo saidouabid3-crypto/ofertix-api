@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from core.auth import require_user
 from schemas.user_deal_schema import UserDealCreate, UserDealListResponse, UserDealOut
 from services.user_deal_service import user_deal_service
 
@@ -17,12 +18,19 @@ async def list_user_deals(
 
 
 @router.post('', response_model=UserDealOut)
-async def create_user_deal(payload: UserDealCreate):
-    return user_deal_service.create(payload)
+async def create_user_deal(payload: UserDealCreate, current_user: dict = Depends(require_user)):
+    name = current_user.get('name') or current_user.get('email', '').split('@')[0] or 'Ofertix User'
+    secured = payload.model_copy(update={'creator_id': current_user['uid'], 'creator_name': name})
+    return user_deal_service.create(secured)
 
 
 @router.post('/{deal_id}/moderate', response_model=UserDealOut)
-async def moderate_user_deal(deal_id: str, status: str = Query(..., pattern='^(pending|approved|rejected)$')):
+async def moderate_user_deal(
+    deal_id: str,
+    status: str = Query(..., pattern='^(pending|approved|rejected)$'),
+    current_user: dict = Depends(require_user),
+):
+    # Admin roles can be added later through custom Firebase claims. Token is required now.
     item = user_deal_service.moderate(deal_id=deal_id, status=status)
     if not item:
         raise HTTPException(status_code=404, detail='User deal not found')
