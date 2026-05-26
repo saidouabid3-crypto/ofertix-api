@@ -1,21 +1,21 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# Env / Secrets
+@"
 .env
 backend/.env
 firebase_key.json
 backend/firebase_key.json
 
-# Logs
-*.log
+__pycache__/
+*/__pycache__/
+*.pyc
 
-# Local files
+.venv/
+venv/
+backend/.venv/
+backend/venv/
+
+debug/
+backend/debug/
+
 products.json
 backend/products.json
-
-# Tests local
-backend/test_zenrows.py
+"@ | Set-Content .gitignore -Encoding utf8

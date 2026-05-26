@@ -1,0 +1,29 @@
+from fastapi import APIRouter, HTTPException, Query
+
+from schemas.user_deal_schema import UserDealCreate, UserDealListResponse, UserDealOut
+from services.user_deal_service import user_deal_service
+
+router = APIRouter(prefix='/user-deals', tags=['User Generated Deals'])
+
+
+@router.get('', response_model=UserDealListResponse)
+async def list_user_deals(
+    country: str | None = Query(default=None),
+    city: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=100),
+):
+    return user_deal_service.list(country=country, city=city, status=status, limit=limit)
+
+
+@router.post('', response_model=UserDealOut)
+async def create_user_deal(payload: UserDealCreate):
+    return user_deal_service.create(payload)
+
+
+@router.post('/{deal_id}/moderate', response_model=UserDealOut)
+async def moderate_user_deal(deal_id: str, status: str = Query(..., pattern='^(pending|approved|rejected)$')):
+    item = user_deal_service.moderate(deal_id=deal_id, status=status)
+    if not item:
+        raise HTTPException(status_code=404, detail='User deal not found')
+    return item
