@@ -41,6 +41,68 @@ class SmartReelService:
         }
         return smart_reel_repository.create(data)
 
+    def update_reel(self, reel_id: str, payload, actor_id: str = 'mobile_user'):
+        existing = smart_reel_repository.get_by_id(reel_id)
+        if not existing:
+            return None
+
+        data = {}
+        payload_data = payload.model_dump(exclude_unset=True)
+
+        text_fields = ['title', 'description', 'store', 'currency', 'product_id']
+        for field in text_fields:
+            if field in payload_data:
+                value = payload_data.get(field)
+                if isinstance(value, str):
+                    value = value.strip()
+                data[field] = value
+
+        if 'affiliate_url' in payload_data:
+            value = payload_data.get('affiliate_url')
+            data['affiliate_url'] = str(value) if value else ''
+
+        current_price = payload_data.get('current_price', existing.get('current_price'))
+        old_price = payload_data.get('old_price', existing.get('old_price'))
+
+        if 'current_price' in payload_data:
+            data['current_price'] = current_price
+
+        if 'old_price' in payload_data:
+            data['old_price'] = old_price
+
+        if 'current_price' in payload_data or 'old_price' in payload_data:
+            discount_percent = 0
+            if old_price and old_price > current_price:
+                discount_percent = int(((old_price - current_price) / old_price) * 100)
+
+            data['discount_percent'] = discount_percent
+            data['deal_score'] = DealScoreService.calculate_score(
+                current_price=current_price,
+                old_price=old_price,
+            )
+            data['ai_verdict'] = DealScoreService.ai_verdict(data['deal_score'])
+            data['fake_discount_risk'] = FakeDiscountService.detect_risk(
+                current_price=current_price,
+                old_price=old_price,
+            )
+
+        if not data:
+            return existing
+
+        return smart_reel_repository.update(reel_id, data, actor_id=actor_id)
+
+    def delete_reel(self, reel_id: str, actor_id: str = 'mobile_user'):
+        return smart_reel_repository.delete(reel_id, actor_id=actor_id)
+
+    def send_message(self, reel_id: str, payload):
+        return smart_reel_repository.create_message(
+            reel_id=reel_id,
+            sender_id=payload.sender_id,
+            sender_name=payload.sender_name,
+            text=payload.text,
+        )
+
+
     def get_feed(self, limit: int = 10, cursor: str | None = None, viewer_id: str | None = None):
         items, next_cursor, has_more = smart_reel_repository.list_feed(limit=limit, cursor=cursor, viewer_id=viewer_id)
         return {'items': items, 'next_cursor': next_cursor, 'has_more': has_more}

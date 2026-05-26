@@ -34,6 +34,55 @@ class SmartReelCreate(BaseModel):
         return value
 
 
+class SmartReelUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=3, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=300)
+    store: Optional[str] = Field(default=None, min_length=2, max_length=80)
+    current_price: Optional[float] = Field(default=None, gt=0)
+    old_price: Optional[float] = Field(default=None, gt=0)
+    currency: Optional[str] = Field(default=None, min_length=3, max_length=3)
+    affiliate_url: Optional[HttpUrl] = None
+    product_id: Optional[str] = Field(default=None, max_length=80)
+
+    @field_validator('title', 'store')
+    @classmethod
+    def reject_swagger_defaults(cls, value: Optional[str]):
+        if value is None:
+            return value
+        cleaned = value.strip()
+        if cleaned.lower() in {'string', 'test', 'demo'}:
+            raise ValueError('Invalid default value. Please provide real data.')
+        return cleaned
+
+    @field_validator('currency')
+    @classmethod
+    def clean_currency(cls, value: Optional[str]):
+        if value is None:
+            return value
+        return value.strip().upper()
+
+
+class SmartReelMessageCreate(BaseModel):
+    sender_id: str = Field(default='mobile_user', max_length=120)
+    sender_name: str = Field(default='Ofertix User', max_length=80)
+    text: str = Field(..., min_length=1, max_length=700)
+
+    @field_validator('text')
+    @classmethod
+    def clean_message(cls, value: str):
+        return value.strip()
+
+
+class SmartReelMessageOut(BaseModel):
+    id: str
+    reel_id: str
+    creator_id: str
+    sender_id: str
+    sender_name: str
+    text: str
+    created_at: datetime
+
+
 class SmartReelOut(BaseModel):
     id: str
     product_id: Optional[str] = None

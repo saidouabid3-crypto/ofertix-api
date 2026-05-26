@@ -2,7 +2,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFile
 
-from schemas.smart_reel_schema import SmartReelCommentCreate, SmartReelCommentOut, SmartReelCreate, SmartReelFeedResponse, SmartReelOut
+from schemas.smart_reel_schema import SmartReelCommentCreate, SmartReelCommentOut, SmartReelCreate, SmartReelFeedResponse, SmartReelMessageCreate, SmartReelMessageOut, SmartReelOut, SmartReelUpdate
 from services.cloudinary_upload_service import cloudinary_upload_service
 from services.smart_reel_service import smart_reel_service
 
@@ -57,6 +57,22 @@ async def upload_smart_reel(
     return smart_reel_service.create_reel(payload)
 
 
+@router.patch('/{reel_id}', response_model=SmartReelOut)
+async def update_smart_reel(reel_id: str, payload: SmartReelUpdate, actor_id: str = Query(default='mobile_user')):
+    reel = smart_reel_service.update_reel(reel_id=reel_id, payload=payload, actor_id=actor_id)
+    if not reel:
+        raise HTTPException(status_code=404, detail='Smart reel not found')
+    return reel
+
+
+@router.delete('/{reel_id}')
+async def delete_smart_reel(reel_id: str, actor_id: str = Query(default='mobile_user')):
+    ok = smart_reel_service.delete_reel(reel_id=reel_id, actor_id=actor_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail='Smart reel not found')
+    return {'ok': True, 'deleted': True, 'reel_id': reel_id}
+
+
 @router.post('/{reel_id}/view')
 async def track_view(reel_id: str):
     reel = smart_reel_service.track_view(reel_id)
@@ -95,6 +111,14 @@ async def report_reel(reel_id: str):
     if not reel:
         raise HTTPException(status_code=404, detail='Smart reel not found')
     return {'ok': True, 'reports': reel['reports']}
+
+
+@router.post('/{reel_id}/message', response_model=SmartReelMessageOut)
+async def message_creator(reel_id: str, payload: SmartReelMessageCreate):
+    message = smart_reel_service.send_message(reel_id=reel_id, payload=payload)
+    if not message:
+        raise HTTPException(status_code=404, detail='Smart reel not found')
+    return message
 
 
 @router.get('/{reel_id}/comments')

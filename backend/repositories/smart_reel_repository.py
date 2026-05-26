@@ -9,11 +9,13 @@ class SmartReelRepository:
     COLLECTION = 'smart_reels'
     COMMENTS_COLLECTION = 'smart_reel_comments'
     FOLLOWS_COLLECTION = 'user_follows'
+    MESSAGES_COLLECTION = 'smart_reel_messages'
 
     def __init__(self):
         self.collection = db.collection(self.COLLECTION)
         self.comments_collection = db.collection(self.COMMENTS_COLLECTION)
         self.follows_collection = db.collection(self.FOLLOWS_COLLECTION)
+        self.messages_collection = db.collection(self.MESSAGES_COLLECTION)
 
     def create(self, data: dict) -> dict:
         now = datetime.utcnow().isoformat()
@@ -36,6 +38,100 @@ class SmartReelRepository:
         }
         self.collection.document(reel_id).set(reel)
         return self._normalize_reel(reel)
+
+    def update(self, reel_id: str, data: dict, actor_id: str = 'mobile_user') -> Optional[dict]:
+        doc_ref = self.collection.document(reel_id)
+        doc = doc_ref.get()
+        if not doc.exists:
+            return None
+
+        existing = doc.to_dict() or {}
+        if not self._can_manage(existing, actor_id):
+            return None
+
+        clean_data = {}
+        allowed_fields = {
+            'title',
+            'description',
+            'store',
+            'current_price',
+            'old_price',
+            'currency',
+            'affiliate_url',
+            'product_id',
+            'discount_percent',
+            'deal_score',
+            'ai_verdict',
+            'fake_discount_risk',
+        }
+
+        for key, value in data.items():
+            if key in allowed_fields:
+                clean_data[key] = value
+
+        if not clean_data:
+            existing = doc.to_dict() or {}
+            existing['id'] = existing.get('id') or reel_id
+            return self._normalize_reel(existing)
+
+        clean_data['updated_at'] = datetime.utcnow().isoformat()
+        doc_ref.update(clean_data)
+
+        updated = doc_ref.get().to_dict() or {}
+        updated['id'] = updated.get('id') or reel_id
+        return self._normalize_reel(updated)
+
+    def delete(self, reel_id: str, actor_id: str = 'mobile_user') -> bool:
+        doc_ref = self.collection.document(reel_id)
+        doc = doc_ref.get()
+        if not doc.exists:
+            return False
+
+        existing = doc.to_dict() or {}
+        if not self._can_manage(existing, actor_id):
+            return False
+
+        # Soft delete: safer than hard delete because Cloudinary/video cleanup can be added later.
+        # Feed already filters status == approved, so deleted reels disappear immediately.
+        doc_ref.update({
+            'status': 'deleted',
+            'deleted_at': datetime.utcnow().isoformat(),
+            'updated_at': datetime.utcnow().isoformat(),
+        })
+        return True
+
+
+    def create_message(self, reel_id: str, sender_id: str = 'mobile_user', sender_name: str = 'Ofertix User', text: str = '') -> Optional[dict]:
+        reel_ref = self.collection.document(reel_id)
+        reel_doc = reel_ref.get()
+        if not reel_doc.exists:
+            return None
+
+        reel = reel_doc.to_dict() or {}
+        now = datetime.utcnow().isoformat()
+        message_id = f'msg_{uuid4().hex[:12]}'
+        message = {
+            'id': message_id,
+            'reel_id': reel_id,
+            'creator_id': str(reel.get('creator_id') or 'mobile_user'),
+            'sender_id': sender_id or 'mobile_user',
+            'sender_name': sender_name or 'Ofertix User',
+            'text': text.strip(),
+            'created_at': now,
+            'status': 'unread',
+        }
+        self.messages_collection.document(message_id).set(message)
+        return message
+
+    def _can_manage(self, reel: dict, actor_id: str = 'mobile_user') -> bool:
+        actor_id = (actor_id or 'mobile_user').strip()
+        creator_id = str(reel.get('creator_id') or 'mobile_user').strip()
+
+        # Safe for current mobile development flow. In production this should be backed by Firebase token verification.
+        if actor_id == 'mobile_user' and creator_id == 'mobile_user':
+            return True
+
+        return bool(actor_id and creator_id and actor_id == creator_id)
 
     def list_feed(self, limit: int = 10, cursor: Optional[str] = None, viewer_id: Optional[str] = None) -> tuple[list[dict], Optional[str], bool]:
         limit = max(1, min(limit, 20))
