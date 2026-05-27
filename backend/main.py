@@ -19,6 +19,8 @@ from routes.ads import router as ads_router
 from routes.mystery_box import router as mystery_box_router
 from routes.profiles import router as profiles_router
 from routes.admin import router as admin_router
+from routes.setup import router as setup_router
+from routes.intelligence import router as intelligence_router
 
 app = FastAPI(
     title="Ofertix API",
@@ -54,6 +56,8 @@ app.include_router(i18n_router)
 app.include_router(marketplace_router)
 app.include_router(ads_router)
 app.include_router(admin_router)
+app.include_router(setup_router)
+app.include_router(intelligence_router)
 
 
 @app.get("/")
@@ -81,6 +85,9 @@ def home():
             "ads_click": "/ads/click",
             "ads_estimate": "/ads/revenue/estimate",
             "admin_dashboard": "/admin/dashboard",
+            "setup_public": "/setup/public",
+            "setup_admin": "/setup/admin",
+            "intelligence": "/admin/intelligence/classify-product",
             "health": "/health",
             "docs": "/docs",
         },

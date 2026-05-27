@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+﻿from fastapi import APIRouter, Depends, HTTPException, Query
 
 from core.auth import require_user
 from schemas.user_deal_schema import UserDealCreate, UserDealListResponse, UserDealOut
@@ -30,7 +30,6 @@ async def moderate_user_deal(
     status: str = Query(..., pattern='^(pending|approved|rejected)$'),
     current_user: dict = Depends(require_user),
 ):
-    # Admin roles can be added later through custom Firebase claims. Token is required now.
     item = user_deal_service.moderate(deal_id=deal_id, status=status)
     if not item:
         raise HTTPException(status_code=404, detail='User deal not found')

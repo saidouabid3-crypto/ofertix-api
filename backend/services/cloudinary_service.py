@@ -30,19 +30,10 @@ class CloudinaryService:
     @staticmethod
     def generate_hls_url(url: str) -> str:
         """
-        HLS placeholder.
-        Cloudinary HLS may need proper video transformation/settings depending on account.
-        We keep this field ready so Flutter does not break later.
+        Return a verified HLS URL only when the platform provides one.
+
+        Ofertix currently serves the optimized MP4 URL as the reliable playback
+        source. Returning an invented .m3u8 path would create broken reels on
+        accounts where adaptive streaming is not enabled.
         """
-        if not url or "/upload/" not in url:
-            return ""
-
-        hls = url.replace(
-            "/upload/",
-            "/upload/sp_hd/"
-        )
-
-        if "." in hls:
-            hls = hls.rsplit(".", 1)[0] + ".m3u8"
-
-        return hls
+        return ""

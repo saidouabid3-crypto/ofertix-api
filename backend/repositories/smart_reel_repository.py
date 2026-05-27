@@ -91,8 +91,8 @@ class SmartReelRepository:
         if not self._can_manage(existing, actor_id):
             return False
 
-        # Soft delete: safer than hard delete because Cloudinary/video cleanup can be added later.
-        # Feed already filters status == approved, so deleted reels disappear immediately.
+        # Soft delete keeps audit/history safe while feed filtering removes the reel immediately.
+        # Media retention can be handled by a dedicated cleanup job without blocking user deletion.
         doc_ref.update({
             'status': 'deleted',
             'deleted_at': datetime.utcnow().isoformat(),
