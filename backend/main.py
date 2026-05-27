@@ -18,6 +18,7 @@ from routes.marketplace import router as marketplace_router
 from routes.ads import router as ads_router
 from routes.mystery_box import router as mystery_box_router
 from routes.profiles import router as profiles_router
+from routes.admin import router as admin_router
 
 app = FastAPI(
     title="Ofertix API",
@@ -52,6 +53,7 @@ app.include_router(i18n_router)
 # Pro Max additions
 app.include_router(marketplace_router)
 app.include_router(ads_router)
+app.include_router(admin_router)
 
 
 @app.get("/")
@@ -78,6 +80,7 @@ def home():
             "ads_impression": "/ads/impression",
             "ads_click": "/ads/click",
             "ads_estimate": "/ads/revenue/estimate",
+            "admin_dashboard": "/admin/dashboard",
             "health": "/health",
             "docs": "/docs",
         },

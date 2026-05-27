@@ -41,3 +41,39 @@ def optional_user(authorization: str | None = Header(default=None)) -> dict | No
         return require_user(authorization)
     except HTTPException:
         return None
+
+
+
+def _is_admin_from_firestore(uid: str) -> bool:
+    try:
+        doc = db.collection('users').document(uid).get()
+        if not doc.exists:
+            return False
+        data = doc.to_dict() or {}
+        role = str(data.get('role') or data.get('userRole') or '').lower().strip()
+        return bool(
+            data.get('isAdmin') is True
+            or data.get('admin') is True
+            or role in {'admin', 'owner', 'super_admin'}
+        )
+    except Exception:
+        return False
+
+
+def _is_admin_from_env(email: str) -> bool:
+    import os
+
+    admins = os.getenv('OFERTIX_ADMIN_EMAILS', '')
+    allowed = {item.strip().lower() for item in admins.split(',') if item.strip()}
+    return bool(email and email.lower().strip() in allowed)
+
+
+def require_admin(current_user: dict = None, authorization: str | None = Header(default=None)) -> dict:
+    user = current_user or require_user(authorization)
+    uid = user.get('uid') or ''
+    email = user.get('email') or ''
+
+    if _is_admin_from_env(email) or _is_admin_from_firestore(uid):
+        return user
+
+    raise HTTPException(status_code=403, detail='Admin access required')

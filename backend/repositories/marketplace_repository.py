@@ -2,15 +2,16 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from core.firebase import db
+from utils.country_intelligence import enrich_country_fields, item_matches_country, normalize_country
 
-COLLECTION = "marketplace_items"
-REPORTS_COLLECTION = "item_reports"
-FAVORITES_COLLECTION = "item_favorites"
+COLLECTION = 'marketplace_items'
+REPORTS_COLLECTION = 'item_reports'
+FAVORITES_COLLECTION = 'item_favorites'
 
 
 def _with_id(doc) -> Dict[str, Any]:
-    data = doc.to_dict() or {}
-    data["id"] = doc.id
+    data = enrich_country_fields(doc.to_dict() or {})
+    data['id'] = doc.id
     return data
 
 
@@ -18,35 +19,49 @@ class MarketplaceRepository:
     def list_items(
         self,
         limit: int = 30,
+        country: str = 'es',
         city: Optional[str] = None,
         category: Optional[str] = None,
         only_active: bool = True,
     ) -> List[Dict[str, Any]]:
+        requested_country = normalize_country(country)
         query = db.collection(COLLECTION)
         if only_active:
-            query = query.where("isActive", "==", True)
+            query = query.where('isActive', '==', True)
         if city:
-            query = query.where("city", "==", city)
+            query = query.where('city', '==', city)
         if category:
-            query = query.where("category", "==", category)
-        query = query.order_by("createdAt", direction="DESCENDING").limit(max(1, min(limit, 100)))
-        return [_with_id(doc) for doc in query.stream()]
+            query = query.where('category', '==', category)
+        query = query.limit(max(1, min(limit * 4, 300)))
+
+        items = []
+        for doc in query.stream():
+            item = _with_id(doc)
+            status = str(item.get('status') or 'active').lower()
+            if status not in {'active', 'approved', 'published'}:
+                continue
+            if not item_matches_country(item, requested_country):
+                continue
+            items.append(item)
+            if len(items) >= limit:
+                break
+        return items
 
     def create_item(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         now = datetime.now(timezone.utc)
-        data = {
+        data = enrich_country_fields({
             **payload,
-            "isActive": payload.get("isActive", True),
-            "isFeatured": payload.get("isFeatured", False),
-            "isSponsored": payload.get("isSponsored", False),
-            "views": int(payload.get("views", 0) or 0),
-            "favorites": int(payload.get("favorites", 0) or 0),
-            "createdAt": payload.get("createdAt") or now,
-            "updatedAt": now,
-        }
+            'isActive': payload.get('isActive', True),
+            'isFeatured': payload.get('isFeatured', False),
+            'isSponsored': payload.get('isSponsored', False),
+            'views': int(payload.get('views', 0) or 0),
+            'favorites': int(payload.get('favorites', 0) or 0),
+            'createdAt': payload.get('createdAt') or now,
+            'updatedAt': now,
+        })
         ref = db.collection(COLLECTION).document()
         ref.set(data)
-        data["id"] = ref.id
+        data['id'] = ref.id
         return data
 
     def get_item(self, item_id: str) -> Optional[Dict[str, Any]]:
@@ -59,7 +74,7 @@ class MarketplaceRepository:
         ref = db.collection(COLLECTION).document(item_id)
         if not ref.get().exists:
             return None
-        payload["updatedAt"] = datetime.now(timezone.utc)
+        payload['updatedAt'] = datetime.now(timezone.utc)
         ref.update(payload)
         return self.get_item(item_id)
 
@@ -67,29 +82,29 @@ class MarketplaceRepository:
         ref = db.collection(COLLECTION).document(item_id)
         if not ref.get().exists:
             return False
-        ref.update({"isActive": False, "deletedAt": datetime.now(timezone.utc)})
+        ref.update({'isActive': False, 'status': 'deleted', 'deletedAt': datetime.now(timezone.utc)})
         return True
 
     def favorite_item(self, item_id: str, user_id: str) -> Dict[str, Any]:
-        fav_id = f"{item_id}_{user_id}"
+        fav_id = f'{item_id}_{user_id}'
         db.collection(FAVORITES_COLLECTION).document(fav_id).set({
-            "itemId": item_id,
-            "userId": user_id,
-            "createdAt": datetime.now(timezone.utc),
+            'itemId': item_id,
+            'userId': user_id,
+            'createdAt': datetime.now(timezone.utc),
         }, merge=True)
-        db.collection(COLLECTION).document(item_id).update({"favorites": firestore_increment(1)})
-        return {"ok": True, "itemId": item_id, "userId": user_id}
+        db.collection(COLLECTION).document(item_id).update({'favorites': firestore_increment(1)})
+        return {'ok': True, 'itemId': item_id, 'userId': user_id}
 
     def report_item(self, item_id: str, user_id: str, reason: str) -> Dict[str, Any]:
         ref = db.collection(REPORTS_COLLECTION).document()
         ref.set({
-            "itemId": item_id,
-            "userId": user_id,
-            "reason": reason,
-            "status": "open",
-            "createdAt": datetime.now(timezone.utc),
+            'itemId': item_id,
+            'userId': user_id,
+            'reason': reason,
+            'status': 'open',
+            'createdAt': datetime.now(timezone.utc),
         })
-        return {"ok": True, "reportId": ref.id}
+        return {'ok': True, 'reportId': ref.id}
 
 
 def firestore_increment(value: int):
