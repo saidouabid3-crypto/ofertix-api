@@ -4,6 +4,7 @@ from importers.carrefour import import_carrefour
 from importers.bosh import import_bosh
 from importers.mediamarkt import import_mediamarkt
 from importers.amazon import import_amazon
+from importers.impact import import_impact
 
 
 def run_all_importers():
@@ -17,6 +18,9 @@ def run_all_importers():
 
     # دابا نخدمو غير Amazon الحقيقي
     import_amazon()
+
+    # Impact product feed (DHgate / other accepted Impact brands)
+    import_impact()
 
     print("All importers finished")
 
