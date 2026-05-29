@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Query
+
 from core.firebase import db
 from core.market_config import normalize_market, SUPPORTED_MARKETS
-from utils.market_filter import item_available_for_country, normalize_item_market_fields
+from utils.product_standard import available_for_country, standardize_product
 
 router = APIRouter()
 
@@ -9,41 +10,68 @@ router = APIRouter()
 @router.get('/products')
 def get_products(
     country: str = 'es',
-    limit: int = Query(50, ge=1, le=100),
-    page: int = Query(1, ge=1, le=50),
+    limit: int = Query(50, ge=1, le=500),
+    page: int = Query(1, ge=1, le=100),
     category: str | None = None,
     store: str | None = None,
 ):
+    """Cost-safe product endpoint with Ofertix Product Standard v1.
+
+    It returns clean products with images[], rating/reviews/sold, deal scores,
+    price accuracy, AI verdict fields and country/currency data.
+    """
     market = normalize_market(country)
-    # Keep Firestore reads bounded. This is not a full search engine, but it prevents unlimited collection reads.
-    read_limit = min(max(limit * 4, 80), 240)
+    read_limit = min(max(limit * 5, 120), 500)
     offset_to_skip = (page - 1) * limit
     try:
-        query = db.collection('products').where('visibleToUsers', '==', True).limit(read_limit)
-        docs = query.stream()
+        docs = db.collection('products').where('visibleToUsers', '==', True).limit(read_limit).stream()
     except Exception:
         docs = db.collection('products').limit(read_limit).stream()
-    results = []
-    skipped = 0
+
     wanted_category = (category or '').strip().lower()
     wanted_store = (store or '').strip().lower()
+    prepared = []
+    seen = set()
+
     for doc in docs:
-        item = doc.to_dict() or {}
-        item['id'] = doc.id
+        raw = doc.to_dict() or {}
+        item = standardize_product(raw, document_id=doc.id, fallback_country=market)
         status = str(item.get('status', 'active')).lower()
         if status not in {'active', 'approved', 'published'}:
             continue
-        item = normalize_item_market_fields(item, fallback_country=market)
-        if not item_available_for_country(item, market):
+        if not available_for_country(item, market):
             continue
-        if wanted_category and wanted_category not in str(item.get('category') or item.get('categoryId') or '').lower():
+        if wanted_category and wanted_category not in str(item.get('categoryGroup') or item.get('category') or '').lower():
             continue
         if wanted_store and wanted_store not in str(item.get('store') or item.get('source') or '').lower():
             continue
-        if skipped < offset_to_skip:
-            skipped += 1
+        if not item.get('image') or float(item.get('newPrice') or 0) <= 0:
             continue
-        results.append(item)
-        if len(results) >= limit:
-            break
-    return {'country': market, 'currency': SUPPORTED_MARKETS[market]['currency'], 'page': page, 'limit': limit, 'count': len(results), 'hasMore': len(results) == limit, 'products': results}
+        fp = item.get('fingerprint') or item.get('id')
+        if fp in seen:
+            continue
+        seen.add(fp)
+        prepared.append(item)
+
+    prepared.sort(
+        key=lambda p: (
+            float(p.get('dealScore') or 0) * 0.40 +
+            float(p.get('trustScore') or 0) * 0.30 +
+            float(p.get('qualityScore') or 0) * 0.20 -
+            float(p.get('riskScore') or 0) * 0.10,
+            int(p.get('reviewCount') or 0),
+        ),
+        reverse=True,
+    )
+    page_items = prepared[offset_to_skip:offset_to_skip + limit]
+    return {
+        'country': market,
+        'currency': SUPPORTED_MARKETS[market]['currency'],
+        'page': page,
+        'limit': limit,
+        'count': len(page_items),
+        'totalPrepared': len(prepared),
+        'hasMore': offset_to_skip + limit < len(prepared),
+        'standardVersion': 'ofertix-product-standard-v1',
+        'products': page_items,
+    }

@@ -21,6 +21,7 @@ from routes.profiles import router as profiles_router
 from routes.admin import router as admin_router
 from routes.setup import router as setup_router
 from routes.intelligence import router as intelligence_router
+from routes.home_feed import router as home_feed_router
 
 app = FastAPI(
     title="Ofertix API",
@@ -58,6 +59,7 @@ app.include_router(ads_router)
 app.include_router(admin_router)
 app.include_router(setup_router)
 app.include_router(intelligence_router)
+app.include_router(home_feed_router)
 
 
 @app.get("/")
@@ -69,6 +71,8 @@ def home():
         "message": "Ofertix Pro Max backend is running successfully.",
         "routes": {
             "products": "/products",
+            "home_feed": "/home-feed",
+            "product_detail_ai": "/product-detail/{product_id}",
             "ai_search": "/api/ai/search",
             "ai_brain": "/ai/brain/analyze",
             "mystery_box": "/mystery-box/today",
@@ -110,6 +114,10 @@ def home():
             "ai_deal_brain_pro",
             "fake_discount_detection",
             "rewards_ready_events",
+            "ofertix_product_standard_v1",
+            "backend_driven_smart_feed",
+            "product_detail_recommendations",
+            "ai_verdict_and_deal_dna",
         ],
     }
 

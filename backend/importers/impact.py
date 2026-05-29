@@ -1,15 +1,21 @@
 import csv
 import hashlib
 import os
-import re
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from dotenv import load_dotenv
 
 from core.firebase import db
-from core.market_config import SUPPORTED_MARKETS, normalize_market
+from utils.product_normalizer import (
+    SUPPORTED_COUNTRIES,
+    clean_int,
+    clean_price,
+    clean_text,
+    normalize_country_list,
+    normalize_product,
+    stable_product_id,
+)
 
 load_dotenv()
 
@@ -22,66 +28,9 @@ DEFAULT_FEED_PATH = BASE_DIR / "data" / "impact_dhgate.txt"
 IMPACT_FEED_PATH = Path(os.getenv("IMPACT_FEED_PATH", str(DEFAULT_FEED_PATH)))
 IMPACT_IMPORT_LIMIT = int(os.getenv("IMPACT_IMPORT_LIMIT", "200"))
 
-# DHgate marketplace دولي، ولكن ما عندناش shipping-country field واضح داخل feed.
-# لذلك كنخليوها Medium confidence، والفلترة كتخدم بالبلدان المدعومة ديال Ofertix.
 DEFAULT_DHGATE_COUNTRIES = [
     "es", "ma", "dz", "fr", "pt", "it", "de", "uk", "us", "ca", "eg", "sa", "ae", "mx"
 ]
-
-CATEGORY_MAP = {
-    "watches": "fashion",
-    "jewelry": "fashion",
-    "apparel": "fashion",
-    "clothing": "fashion",
-    "phone": "electronics",
-    "phones": "electronics",
-    "electronics": "electronics",
-    "computer": "electronics",
-    "beauty": "beauty",
-    "health": "health",
-    "fitness": "fitness",
-    "home": "home",
-    "kitchen": "kitchen",
-    "toys": "kids",
-    "automotive": "auto",
-}
-
-
-def clean_text(value) -> str:
-    if value is None:
-        return ""
-    text = str(value).strip()
-    if text.lower() in {"", "none", "null", "nan", "n/a"}:
-        return ""
-    return text
-
-
-def clean_price(value) -> float:
-    text = clean_text(value)
-    if not text:
-        return 0.0
-    text = text.replace(",", ".")
-    text = re.sub(r"[^0-9.]", "", text)
-    try:
-        return round(float(text), 2)
-    except Exception:
-        return 0.0
-
-
-def clean_int(value) -> int:
-    try:
-        return int(round(clean_price(value)))
-    except Exception:
-        return 0
-
-
-def normalize_country_list(countries: list[str]) -> list[str]:
-    normalized = []
-    for country in countries:
-        code = normalize_market(country)
-        if code in SUPPORTED_MARKETS and code not in normalized:
-            normalized.append(code)
-    return normalized
 
 
 def extract_original_url(affiliate_url: str) -> str:
@@ -98,31 +47,14 @@ def extract_original_url(affiliate_url: str) -> str:
     return ""
 
 
-def guess_category(category_name: str, category_path: str, name: str) -> str:
-    raw = f"{category_name} {category_path} {name}".lower()
-    for key, value in CATEGORY_MAP.items():
-        if key in raw:
-            return value
-    return "deals"
-
-
-def stable_doc_id(program_id: str, sku: str, name: str, affiliate_url: str) -> str:
-    sku = clean_text(sku)
-    program_id = clean_text(program_id)
-    if sku and program_id:
-        return f"impact_{program_id}_{sku}"
-    raw = f"{program_id}-{sku}-{name}-{affiliate_url}".encode("utf-8")
-    return "impact_" + hashlib.md5(raw).hexdigest()
-
-
 def build_impact_product(row: dict) -> dict | None:
     sku = clean_text(row.get("Sku"))
     program_id = clean_text(row.get("Program Id"))
     catalog_id = clean_text(row.get("Catalog Id"))
     store = clean_text(row.get("Program Names")) or "Impact"
 
-    name = clean_text(row.get("Name"))
-    description = clean_text(row.get("Description")) or name
+    full_title = clean_text(row.get("Name"))
+    feed_description = clean_text(row.get("Description"))
     image = clean_text(row.get("Image Url"))
     affiliate_url = clean_text(row.get("Url"))
     product_url = clean_text(row.get("Original Url")) or extract_original_url(affiliate_url)
@@ -136,34 +68,17 @@ def build_impact_product(row: dict) -> dict | None:
     currency = clean_text(row.get("Currency")) or "USD"
     stock = clean_text(row.get("Stock Availability"))
 
-    if not name or not image.startswith("http") or not affiliate_url.startswith("http") or new_price <= 0:
+    if not full_title or not image.startswith("http") or not affiliate_url.startswith("http") or new_price <= 0:
         return None
 
-    if old_price <= 0:
-        old_price = new_price
+    available_countries = normalize_country_list(DEFAULT_DHGATE_COUNTRIES, fallback="global")
 
-    if discount <= 0 and old_price > new_price:
-        discount = round(((old_price - new_price) / old_price) * 100)
-
-    in_stock = stock.lower() in {"instock", "in stock", "available", "true", "yes"} or not stock
-
-    status = "active" if in_stock and discount >= 5 else "needs_market_review"
-    visible = status == "active"
-
-    admin_issue = ""
-    if not in_stock:
-        admin_issue = "Out of stock or unknown stock status"
-    elif discount < 5:
-        admin_issue = "Discount too low"
-
-    available_countries = normalize_country_list(DEFAULT_DHGATE_COUNTRIES)
-
-    return {
+    raw_product = {
         "sku": sku,
         "programId": program_id,
         "catalogId": catalog_id,
-        "name": name,
-        "description": description,
+        "fullTitle": full_title,
+        "description": feed_description or full_title,
         "image": image,
         "additionalImages": clean_text(row.get("Additional ImageUrls")),
         "newPrice": new_price,
@@ -175,11 +90,10 @@ def build_impact_product(row: dict) -> dict | None:
         "affiliateNetwork": "impact",
         "affiliateUrl": affiliate_url,
         "productUrl": product_url,
-        "category": guess_category(category_name, category_path, name),
         "categoryName": category_name,
         "categoryPath": category_path,
 
-        # مهم: Ofertix ماشي Spain فقط. هذا منتج international marketplace.
+        # Ofertix multi-country. DHgate marketplace دولي، لكن بثقة متوسطة.
         "countryCode": "global",
         "country": "global",
         "availableCountries": available_countries,
@@ -190,24 +104,38 @@ def build_impact_product(row: dict) -> dict | None:
         "pickupOnly": False,
 
         "language": clean_text(row.get("Language Locale")) or "en",
-        "status": status,
-        "visibleToUsers": visible,
-        "adminIssue": admin_issue,
         "stockAvailability": stock or "InStock",
-        "isOnline": True,
-        "isHot": discount >= 40,
-        "featured": discount >= 50,
-        "sponsored": False,
-        "views": 0,
-        "clicks": 0,
-        "sales": 0,
+        "minimumDiscount": 5,
+        "priceAccuracy": "estimated",
+        "priceSource": "impact_feed",
+        "finalPriceInStore": True,
+        "priceNote": (
+            "Precio aproximado desde el feed de afiliación. "
+            "El precio final se confirma en la tienda."
+        ),
         "commissionMin": clean_price(row.get("Min Commission Percentage")),
         "commissionMax": clean_price(row.get("Max Commission Percentage")),
         "commissionCurrency": clean_text(row.get("Commission Currency")),
         "lastUpdatedFromFeed": clean_text(row.get("Last Updated")),
-        "importedAt": datetime.now(timezone.utc).isoformat(),
-        "updatedAt": datetime.now(timezone.utc).isoformat(),
     }
+
+    return normalize_product(raw_product)
+
+
+def impact_doc_id(product: dict) -> str:
+    program_id = clean_text(product.get("programId"))
+    sku = clean_text(product.get("sku"))
+
+    if program_id and sku:
+        return f"impact_{program_id}_{sku}"
+
+    return stable_product_id(
+        "impact",
+        program_id,
+        sku,
+        product.get("fullTitle"),
+        product.get("affiliateUrl"),
+    )
 
 
 def import_impact(feed_path: str | None = None, limit: int | None = None):
@@ -221,7 +149,7 @@ def import_impact(feed_path: str | None = None, limit: int | None = None):
     if not path.exists():
         print(f"Impact importer skipped: feed file not found: {path}")
         print("Put the feed here: backend/data/impact_dhgate.txt")
-        return
+        return {"imported": 0, "active": 0, "needs_review": 0, "skipped": 0}
 
     imported = 0
     active = 0
@@ -242,14 +170,7 @@ def import_impact(feed_path: str | None = None, limit: int | None = None):
                 skipped += 1
                 continue
 
-            doc_id = stable_doc_id(
-                product.get("programId", ""),
-                product.get("sku", ""),
-                product.get("name", ""),
-                product.get("affiliateUrl", ""),
-            )
-
-            doc_ref = db.collection("products").document(doc_id)
+            doc_ref = db.collection("products").document(impact_doc_id(product))
             batch.set(doc_ref, product, merge=True)
 
             imported += 1
@@ -273,3 +194,9 @@ def import_impact(feed_path: str | None = None, limit: int | None = None):
     print("Active:", active)
     print("Needs review:", review)
     print("Skipped:", skipped)
+
+    return {"imported": imported, "active": active, "needs_review": review, "skipped": skipped}
+
+
+if __name__ == "__main__":
+    import_impact()

@@ -1,4 +1,3 @@
-@"
 .env
 backend/.env
 firebase_key.json
@@ -18,4 +17,24 @@ backend/debug/
 
 products.json
 backend/products.json
-"@ | Set-Content .gitignore -Encoding utf8
+
+data/*.txt
+data/impact_*
+backend/data/*.txt
+backend/data/impact_*
+
+.env
+
+firebase_key.json
+
+*.json
+
+data/
+
+backend/data/
+
+__pycache__/
+
+*.pyc
+
+.env.*
