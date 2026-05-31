@@ -1,40 +1,42 @@
-.env
-backend/.env
-firebase_key.json
-backend/firebase_key.json
+# Ofertix backend - protected files
 
+# Secrets / credentials
+.env
+.env.*
+*.env
+firebase_key.json
+firebase_key*.json
+serviceAccount*.json
+google-services.json
+*.pem
+*.key
+
+# Python
 __pycache__/
 */__pycache__/
-*.pyc
-
+*.py[cod]
 .venv/
 venv/
-backend/.venv/
-backend/venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
+# Runtime / debug
 debug/
-backend/debug/
+*.log
+*.sqlite3
+*.db
 
+# Local/generated data
 products.json
-backend/products.json
-
-data/*.txt
-data/impact_*
-backend/data/*.txt
-backend/data/impact_*
-
-.env
-
-firebase_key.json
-
-*.json
-
 data/
-
 backend/data/
 
-__pycache__/
-
-*.pyc
-
-.env.*
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

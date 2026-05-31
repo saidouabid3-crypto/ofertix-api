@@ -1,0 +1,7 @@
+PY_COMPILE REPORT
+Checked Python files: 122
+Errors: 1
+- scripts/import_ads_csv.py:   File "/mnt/data/ofertix_backend_complete_merged_work/backend/scripts/import_ads_csv.py", line 1
+    """
+    ^^^
+SyntaxError: (unicode error) 'unicodeescape' codec can't decode bytes in position 163-164: truncated \UXXXXXXXX escape

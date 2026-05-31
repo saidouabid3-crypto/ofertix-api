@@ -1,68 +1,32 @@
-"""
-Normaliza المنتجات القديمة اللي كاينة فـ Firestore بدون ما تبدل importers.
-Useful after adding utils/product_normalizer.py.
-
-Run:
-python -m scripts.normalize_existing_products --limit 500
-"""
+from __future__ import annotations
 
 import argparse
-
 from core.firebase import db
-from utils.product_normalizer import normalize_product
+from utils.product_standard import normalize_product
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--limit", type=int, default=500)
-    parser.add_argument("--dry-run", action="store_true")
+    parser = argparse.ArgumentParser(description='Normalize existing Ofertix products with Product Standard v1.')
+    parser.add_argument('--limit', type=int, default=1000)
+    parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
-
-    print("Normalize existing products started")
-    print("Limit:", args.limit)
-    print("Dry run:", args.dry_run)
-
-    docs = list(db.collection("products").limit(args.limit).stream())
-
+    print('Normalize existing products started')
+    print('Limit:', args.limit)
+    print('Dry run:', args.dry_run)
     updated = 0
     skipped = 0
-
-    for doc in docs:
-        old = doc.to_dict() or {}
-        normalized = normalize_product(old)
-
-        update_data = {
-            "name": normalized["name"],
-            "title": normalized["title"],
-            "fullTitle": normalized["fullTitle"],
-            "description": normalized["description"],
-            "category": normalized["category"],
-            "categoryName": normalized["categoryName"],
-            "countryCode": normalized["countryCode"],
-            "country": normalized["country"],
-            "availableCountries": normalized["availableCountries"],
-            "shipsTo": normalized["shipsTo"],
-            "priceAccuracy": normalized["priceAccuracy"],
-            "priceSource": normalized["priceSource"],
-            "finalPriceInStore": normalized["finalPriceInStore"],
-            "priceNote": normalized["priceNote"],
-            "status": normalized["status"],
-            "visibleToUsers": normalized["visibleToUsers"],
-            "adminIssue": normalized["adminIssue"],
-            "updatedAt": normalized["updatedAt"],
-        }
-
+    for doc in db.collection('products').limit(args.limit).stream():
+        data = doc.to_dict() or {}
+        normalized = normalize_product(data)
         if args.dry_run:
-            print(doc.id, "=>", update_data["name"], "|", update_data["status"])
-        else:
-            db.collection("products").document(doc.id).set(update_data, merge=True)
-
+            updated += 1
+            continue
+        doc.reference.set(normalized, merge=True)
         updated += 1
+    print('Normalize existing products finished')
+    print('Updated:', updated)
+    print('Skipped:', skipped)
 
-    print("Normalize existing products finished")
-    print("Updated:", updated)
-    print("Skipped:", skipped)
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

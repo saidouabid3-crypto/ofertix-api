@@ -1,134 +1,160 @@
+from __future__ import annotations
+
+import importlib
+import importlib.util
+import logging
+import os
+from contextlib import asynccontextmanager
+from typing import Iterable
+
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from core.middleware import LocaleMiddleware
 
 load_dotenv()
 
-from routes.products import router as products_router
-from routes.ai_search import router as ai_search_router
-from routes.smart_reels import router as smart_reels_router
-from routes.messages import router as messages_router
-from routes.community import router as community_router
-from routes.coupons import router as coupons_router
-from routes.user_deals import router as user_deals_router
-from routes.geo_alerts import router as geo_alerts_router
-from routes.ai_brain import router as ai_brain_router
-from routes.i18n import router as i18n_router
-from routes.marketplace import router as marketplace_router
-from routes.ads import router as ads_router
-from routes.mystery_box import router as mystery_box_router
-from routes.profiles import router as profiles_router
-from routes.admin import router as admin_router
-from routes.setup import router as setup_router
-from routes.intelligence import router as intelligence_router
-from routes.home_feed import router as home_feed_router
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+logger = logging.getLogger("ofertix")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Ofertix API starting")
+    yield
+    logger.info("Ofertix API stopping")
+
 
 app = FastAPI(
-    title="Ofertix API",
-    description="Ofertix Pro Max backend: products, Groq AI search, reels, marketplace, coupons, community, geo alerts, ads revenue, and messages.",
-    version="7.3.0-pro-max",
+    title=os.getenv("API_TITLE", "Ofertix API"),
+    version=os.getenv("API_VERSION", "7.1.0"),
+    lifespan=lifespan,
 )
+
+
+def _cors_origins() -> list[str]:
+    raw = os.getenv("CORS_ALLOW_ORIGINS", "*")
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return origins or ["*"]
+
+
+def _cors_allow_credentials(origins: list[str]) -> bool:
+    raw = os.getenv("CORS_ALLOW_CREDENTIALS")
+    if raw is not None:
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    # Browsers reject credentials with wildcard origins.
+    # This keeps wildcard CORS useful for dev/mobile while avoiding invalid CORS.
+    return "*" not in origins
+
+
+origins = _cors_origins()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=origins,
+    allow_credentials=_cors_allow_credentials(origins),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Core existing routes — preserved
-app.include_router(products_router)
-app.include_router(ai_search_router)
-app.include_router(smart_reels_router)
-
-# Super-app routes
-app.include_router(messages_router)
-app.include_router(profiles_router)
-app.include_router(community_router)
-app.include_router(coupons_router)
-app.include_router(user_deals_router)
-app.include_router(geo_alerts_router)
-app.include_router(ai_brain_router)
-app.include_router(mystery_box_router)
-app.include_router(i18n_router)
-
-# Pro Max additions
-app.include_router(marketplace_router)
-app.include_router(ads_router)
-app.include_router(admin_router)
-app.include_router(setup_router)
-app.include_router(intelligence_router)
-app.include_router(home_feed_router)
+# Bind normalized request-scoped locale:
+# X-App-Locale / Accept-Language / X-App-Country / X-App-Currency
+# باش AI والـ backend يرجعو النصوص بنفس لغة التطبيق.
+app.add_middleware(LocaleMiddleware)
 
 
-@app.get("/")
-def home():
-    return {
-        "app": "Ofertix API",
-        "status": "running",
-        "version": "7.3.0-pro-max",
-        "message": "Ofertix Pro Max backend is running successfully.",
-        "routes": {
-            "products": "/products",
-            "home_feed": "/home-feed",
-            "product_detail_ai": "/product-detail/{product_id}",
-            "ai_search": "/api/ai/search",
-            "ai_brain": "/ai/brain/analyze",
-            "mystery_box": "/mystery-box/today",
-            "smart_reels_feed": "/smart-reels/feed",
-            "messages": "/messages/conversations",
-            "community_vote": "/community/vote",
-            "coupons": "/coupons",
-            "user_deals": "/user-deals",
-            "geo_alerts": "/geo-alerts/nearby",
-            "countries": "/i18n/countries",
-            "languages": "/i18n/languages",
-            "marketplace": "/marketplace/items",
-            "ads_impression": "/ads/impression",
-            "ads_click": "/ads/click",
-            "ads_estimate": "/ads/revenue/estimate",
-            "admin_dashboard": "/admin/dashboard",
-            "setup_public": "/setup/public",
-            "setup_admin": "/setup/admin",
-            "intelligence": "/admin/intelligence/classify-product",
-            "health": "/health",
-            "docs": "/docs",
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled error at %s: %s", request.url.path, exc)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Internal server error",
+            "safeMessage": "The Ofertix API is temporarily unavailable.",
+            "path": request.url.path,
         },
-        "features": [
-            "products",
-            "groq_ai_search_preserved",
-            "ai_deal_brain_pro",
-            "smart_deal_reels_preserved",
-            "creator_profiles",
-            "messages",
-            "hot_cold_voting",
-            "community_trust",
-            "coupon_system",
-            "user_generated_deals",
-            "geo_fencing_alert_foundation",
-            "marketplace_users_sell",
-            "ads_revenue_estimator",
-            "cloudinary_optimized_video",
-            "blind_deal_box",
-            "ai_deal_brain_pro",
-            "fake_discount_detection",
-            "rewards_ready_events",
-            "ofertix_product_standard_v1",
-            "backend_driven_smart_feed",
-            "product_detail_recommendations",
-            "ai_verdict_and_deal_dna",
-        ],
-    }
+    )
 
 
 @app.get("/health")
-def health():
+async def health() -> dict[str, str]:
     return {
         "status": "ok",
         "service": "ofertix-api",
-        "version": "7.3.0-pro-max",
-        "super_app": "enabled",
-        "marketplace": "enabled",
-        "ads_revenue": "enabled",
+        "version": os.getenv("API_VERSION", "7.1.0"),
     }
+
+
+ROUTER_MODULES: tuple[str, ...] = (
+    "routes.products",
+    "routes.scan",
+    "routes.ai_search",
+    "routes.home_feed",
+    "routes.i18n",
+    "routes.market",
+    "routes.marketplace",
+    "routes.ads",
+    "routes.ai_brain",
+    "routes.community",
+    "routes.coupons",
+    "routes.geo_alerts",
+    "routes.messages",
+    "routes.mystery_box",
+    "routes.profiles",
+    "routes.smart_reels",
+    "routes.user_deals",
+    "routes.admin",
+    "routes.intelligence",
+    "routes.setup",
+    "routes.ai_deal_brain",
+
+    # Ofertix Local Engine:
+    # /api/local/stores
+    # /api/local/stores/nearby
+    # /api/local/offers/nearby
+    # /api/merchant/stores
+    # /api/merchant/offers
+    # /api/admin/local/offers/pending
+    "routes.local_engine",
+)
+
+
+def include_project_routers(app: FastAPI, module_paths: Iterable[str]) -> None:
+    strict = os.getenv("STRICT_ROUTE_IMPORTS", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    for module_path in module_paths:
+        if importlib.util.find_spec(module_path) is None:
+            message = f"Router module not found and skipped: {module_path}"
+            if strict:
+                raise ModuleNotFoundError(message)
+
+            logger.warning(message)
+            continue
+
+        try:
+            module = importlib.import_module(module_path)
+            router = getattr(module, "router")
+            app.include_router(router)
+            logger.info("Included router: %s", module_path)
+
+        except Exception as exc:
+            message = f"Failed to include router {module_path}: {exc}"
+            if strict:
+                raise
+
+            logger.exception(message)
+
+
+include_project_routers(app, ROUTER_MODULES)
