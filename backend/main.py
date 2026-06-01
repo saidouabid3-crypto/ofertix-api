@@ -8,11 +8,15 @@ from contextlib import asynccontextmanager
 from typing import Iterable
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from core.api_envelope import ApiEnvelopeMiddleware, error_payload, success_payload
+from core.ai_rate_limit import ai_quota_exceeded_response
 from core.middleware import LocaleMiddleware
+from core.redis_client import redis_client
+from services.scheduler_service import scheduler_service
 
 load_dotenv()
 
@@ -27,13 +31,18 @@ logger = logging.getLogger("ofertix")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Ofertix API starting")
+    redis_client.connect()
+    if os.getenv("ENABLE_PRODUCT_SYNC_WORKER", "true").strip().lower() in {"1", "true", "yes", "on"}:
+        scheduler_service.start()
     yield
+    scheduler_service.shutdown()
+    redis_client.close()
     logger.info("Ofertix API stopping")
 
 
 app = FastAPI(
     title=os.getenv("API_TITLE", "Ofertix API"),
-    version=os.getenv("API_VERSION", "7.1.0"),
+    version=os.getenv("API_VERSION", "7.2.0-elite"),
     lifespan=lifespan,
 )
 
@@ -48,9 +57,6 @@ def _cors_allow_credentials(origins: list[str]) -> bool:
     raw = os.getenv("CORS_ALLOW_CREDENTIALS")
     if raw is not None:
         return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-    # Browsers reject credentials with wildcard origins.
-    # This keeps wildcard CORS useful for dev/mobile while avoiding invalid CORS.
     return "*" not in origins
 
 
@@ -64,32 +70,55 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Bind normalized request-scoped locale:
-# X-App-Locale / Accept-Language / X-App-Country / X-App-Currency
-# باش AI والـ backend يرجعو النصوص بنفس لغة التطبيق.
 app.add_middleware(LocaleMiddleware)
+app.add_middleware(ApiEnvelopeMiddleware)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if exc.status_code == 402:
+        return ai_quota_exceeded_response(exc)
+    detail = exc.detail
+    message = detail if isinstance(detail, str) else str(detail)
+    return JSONResponse(status_code=exc.status_code, content=error_payload(message, data=detail if isinstance(detail, dict) else None))
 
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled error at %s: %s", request.url.path, exc)
+    try:
+        from datetime import datetime, timezone
+
+        from core.firebase import db
+
+        db.collection("system_errors").add(
+            {
+                "path": request.url.path,
+                "message": str(exc),
+                "createdAt": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+    except Exception:
+        pass
     return JSONResponse(
         status_code=500,
-        content={
-            "detail": "Internal server error",
-            "safeMessage": "The Ofertix API is temporarily unavailable.",
-            "path": request.url.path,
-        },
+        content=error_payload(
+            "The Ofertix API is temporarily unavailable.",
+            data={"detail": "Internal server error", "path": request.url.path},
+        ),
     )
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {
-        "status": "ok",
-        "service": "ofertix-api",
-        "version": os.getenv("API_VERSION", "7.1.0"),
-    }
+async def health() -> dict[str, object]:
+    return success_payload(
+        {
+            "status": "ok",
+            "service": "ofertix-api",
+            "version": os.getenv("API_VERSION", "7.2.0-elite"),
+            "redis": "memory" if redis_client.is_memory_fallback else "connected",
+        }
+    )
 
 
 ROUTER_MODULES: tuple[str, ...] = (
@@ -114,14 +143,6 @@ ROUTER_MODULES: tuple[str, ...] = (
     "routes.intelligence",
     "routes.setup",
     "routes.ai_deal_brain",
-
-    # Ofertix Local Engine:
-    # /api/local/stores
-    # /api/local/stores/nearby
-    # /api/local/offers/nearby
-    # /api/merchant/stores
-    # /api/merchant/offers
-    # /api/admin/local/offers/pending
     "routes.local_engine",
 )
 
@@ -139,7 +160,6 @@ def include_project_routers(app: FastAPI, module_paths: Iterable[str]) -> None:
             message = f"Router module not found and skipped: {module_path}"
             if strict:
                 raise ModuleNotFoundError(message)
-
             logger.warning(message)
             continue
 
@@ -148,12 +168,10 @@ def include_project_routers(app: FastAPI, module_paths: Iterable[str]) -> None:
             router = getattr(module, "router")
             app.include_router(router)
             logger.info("Included router: %s", module_path)
-
         except Exception as exc:
             message = f"Failed to include router {module_path}: {exc}"
             if strict:
                 raise
-
             logger.exception(message)
 
 

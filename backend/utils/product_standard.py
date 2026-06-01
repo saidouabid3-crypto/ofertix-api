@@ -5,6 +5,9 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from core.elite_categories import classify_elite_category, map_to_elite_category
+from core.image_validator import filter_valid_images_sync
+
 KITCHEN_POSITIVE = {
     'kitchen', 'cookware', 'pan', 'pot', 'knife', 'spoon', 'fork', 'plate', 'cup', 'mug',
     'sink', 'faucet', 'cabinet', 'drawer', 'organizer', 'blender', 'mixer', 'air fryer',
@@ -14,21 +17,6 @@ KITCHEN_NEGATIVE = {
     'shoe', 'sneaker', 'ring', 'jewelry', 'earring', 'necklace', 'bracelet', 'watch', 'smartwatch',
     'phone', 'iphone', 'samsung', 'dress', 'pants', 'jeans', 'bag', 'makeup', 'wig', 'toy', 'car',
 }
-CATEGORY_RULES = [
-    ('Smart Watches', {'smartwatch', 'smart watch', 'watch band', 'wristband', 'fitness tracker'}, {'kitchen', 'pan', 'pot'}),
-    ('Phones', {'iphone', 'samsung', 'phone', 'mobile', 'smartphone', 'case for iphone', 'usb-c'}, {'pan', 'pot'}),
-    ('Electronics', {'camera', 'audio', 'speaker', 'headphone', 'earbuds', 'charger', 'usb', 'ssd', 'laptop', 'tablet'}, set()),
-    ('Beauty', {'beauty', 'hair', 'makeup', 'cosmetic', 'skin', 'nail', 'perfume'}, {'pan', 'pot'}),
-    ('Fashion', {'shirt', 'dress', 'pants', 'jeans', 'jacket', 'coat', 'bag', 'shoe', 'sneaker', 'fashion'}, {'kitchen'}),
-    ('Jewelry', {'ring', 'earring', 'necklace', 'bracelet', 'jewelry'}, {'kitchen'}),
-    ('Kitchen', KITCHEN_POSITIVE, KITCHEN_NEGATIVE),
-    ('Home', {'home', 'house', 'furniture', 'lamp', 'sofa', 'bed', 'bathroom', 'decor', 'storage'}, set()),
-    ('Tools', {'tool', 'drill', 'wrench', 'screwdriver', 'hardware', 'welding', 'cutter'}, set()),
-    ('Cars', {'car', 'auto', 'vehicle', 'motorcycle', 'bike accessory'}, {'kitchen'}),
-    ('Kids', {'kid', 'baby', 'toy', 'children'}, set()),
-    ('Fitness', {'fitness', 'gym', 'sport', 'yoga', 'bike', 'running'}, set()),
-    ('Gaming', {'gaming', 'console', 'controller', 'keyboard', 'mouse gamer'}, set()),
-]
 SUPPORTED_COUNTRIES = ['es', 'ma', 'dz', 'fr', 'pt', 'it', 'de', 'uk', 'us', 'ca', 'eg', 'sa', 'ae', 'mx']
 
 
@@ -91,27 +79,6 @@ def _short_name(title: str) -> str:
     return name or title[:70]
 
 
-def classify_category(item: dict[str, Any]) -> tuple[str, float, str]:
-    hay = ' '.join([
-        _text(item.get('name')),
-        _text(item.get('title')),
-        _text(item.get('description')),
-        _text(item.get('category')),
-        _text(item.get('sourceCategory')),
-        _text(item.get('storeCategory')),
-    ]).lower()
-    best = ('General', 0.35, 'fallback')
-    for category, positives, negatives in CATEGORY_RULES:
-        if any(n in hay for n in negatives):
-            continue
-        hits = [p for p in positives if p in hay]
-        if hits:
-            confidence = min(0.98, 0.72 + len(hits) * 0.08)
-            if confidence > best[1]:
-                best = (category, confidence, f"matched: {', '.join(hits[:4])}")
-    return best
-
-
 def score_product(item: dict[str, Any]) -> tuple[float, float, float, str]:
     price = _number(item.get('newPrice') or item.get('price'))
     old = _number(item.get('oldPrice'))
@@ -150,35 +117,65 @@ def normalize_product(item: dict[str, Any], *, fallback_country: str = 'global')
     full_title = _text(item.get('fullTitle') or item.get('title') or item.get('name'), 'Product')
     name = _short_name(_text(item.get('name'), full_title))
     image = _text(item.get('mainImage') or item.get('image') or item.get('imageUrl') or item.get('image_url'))
-    images = []
+    images_raw: list[str] = []
     for img in [image, *_list(item.get('images') or item.get('imageUrls') or item.get('gallery'))]:
-        if img and img.startswith('http') and img not in images:
-            images.append(img)
-    category, confidence, reason = classify_category({**item, 'name': name, 'title': full_title})
+        if img and img.startswith('http') and img not in images_raw:
+            images_raw.append(img)
+
+    try:
+        images = filter_valid_images_sync(images_raw, max_images=3)
+    except Exception:
+        images = images_raw[:3]
+
+    category, confidence, reason = classify_elite_category({**item, 'name': name, 'title': full_title})
+    category = map_to_elite_category(category)
+
     price = _number(item.get('newPrice') or item.get('price') or item.get('sale_price'))
     old = _number(item.get('oldPrice') or item.get('old_price') or item.get('original_price'))
     discount = _int(item.get('discount'))
     if discount <= 0 and old > price > 0:
         discount = int(round(((old - price) / old) * 100))
+
     country = _text(item.get('countryCode') or item.get('country') or fallback_country, 'global').lower()
     available = [x.lower() for x in _list(item.get('availableCountries'))]
     ships = [x.lower() for x in _list(item.get('shipsTo'))]
     if country == 'global' and not available and not ships:
         available = SUPPORTED_COUNTRIES
-    deal, trust, quality, verdict = score_product({**item, 'newPrice': price, 'oldPrice': old, 'discount': discount, 'images': images, 'category': category})
+
+    deal, trust, quality, verdict = score_product({
+        **item,
+        'newPrice': price,
+        'oldPrice': old,
+        'discount': discount,
+        'images': images,
+        'category': category,
+    })
+
     status = _text(item.get('status'), 'active').lower()
     visible = _bool(item.get('visibleToUsers'), True)
+    is_expired = _bool(item.get('isExpired'), False)
     admin_issue = _text(item.get('adminIssue'))
+
+    if is_expired:
+        status = 'expired'
+        visible = False
+
     if not images or price <= 0 or confidence < 0.55:
         status = 'needs_market_review'
         visible = False
         admin_issue = admin_issue or 'quality_gate_failed'
-    if category == 'Kitchen':
+
+    if category == 'home':
         hay = f"{name} {full_title} {_text(item.get('description'))}".lower()
-        if any(n in hay for n in KITCHEN_NEGATIVE):
+        if any(n in hay for n in KITCHEN_NEGATIVE) and any(p in hay for p in KITCHEN_POSITIVE):
+            pass
+        elif any(n in hay for n in KITCHEN_NEGATIVE):
             status = 'needs_market_review'
             visible = False
-            admin_issue = 'category_kitchen_negative_match'
+            admin_issue = 'category_home_negative_match'
+
+    affiliate_url = _text(item.get('affiliateUrl') or item.get('affiliate_url') or item.get('productUrl') or item.get('url'))
+
     normalized = dict(item)
     normalized.update({
         'name': name,
@@ -212,7 +209,9 @@ def normalize_product(item: dict[str, Any], *, fallback_country: str = 'global')
         'finalPriceInStore': _bool(item.get('finalPriceInStore'), True),
         'visibleToUsers': visible,
         'status': status,
+        'isExpired': is_expired,
         'adminIssue': admin_issue,
+        'affiliateUrl': affiliate_url,
         'fingerprint': _text(item.get('fingerprint')) or product_fingerprint({'store': item.get('store'), 'name': name, 'newPrice': price}),
         'updatedAt': item.get('updatedAt') or datetime.now(timezone.utc).isoformat(),
     })

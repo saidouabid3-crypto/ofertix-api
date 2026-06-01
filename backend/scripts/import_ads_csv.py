@@ -2,7 +2,7 @@
 Import affiliate banner ads from a CSV exported by your affiliate network into Firestore.
 
 Usage from backend root:
-    python -m scripts.import_ads_csv --csv "C:\Users\HP-PROBOOK\Downloads\Ads (9).csv"
+    python -m scripts.import_ads_csv --csv "C:\\Users\\HP-PROBOOK\\Downloads\\Ads (9).csv"
 
 Requirements:
     firebase-admin installed

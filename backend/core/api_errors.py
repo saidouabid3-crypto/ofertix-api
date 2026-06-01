@@ -93,6 +93,17 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "nl": "Je hebt geen toestemming om deze actie uit te voeren.",
         "tr": "Bu işlemi gerçekleştirme izniniz yok.",
     },
+    "ai_quota_exceeded": {
+        "en": "You've used today's free AI searches. Upgrade to Ofertix Premium for unlimited access.",
+        "es": "Has agotado las búsquedas IA gratuitas de hoy. Pásate a Ofertix Premium para acceso ilimitado.",
+        "fr": "Vous avez utilisé vos recherches IA gratuites du jour. Passez à Ofertix Premium pour un accès illimité.",
+        "ar": "لقد استنفدت عمليات البحث المجانية بالذكاء الاصطناعي اليوم. قم بالترقية إلى Ofertix Premium.",
+        "de": "Du hast dein kostenloses KI-Kontingent für heute verbraucht. Upgrade auf Ofertix Premium für unbegrenzten Zugang.",
+        "it": "Hai esaurito le ricerche IA gratuite di oggi. Passa a Ofertix Premium per accesso illimitato.",
+        "pt": "Você usou as buscas IA gratuitas de hoje. Atualize para Ofertix Premium para acesso ilimitado.",
+        "nl": "Je hebt je gratis AI-zoekopdrachten voor vandaag gebruikt. Upgrade naar Ofertix Premium.",
+        "tr": "Bugünkü ücretsiz yapay zekâ aramalarınız bitti. Sınırsız erişim için Ofertix Premium'a geçin.",
+    },
     "rate_limited": {
         "en": "Too many requests. Please wait a moment and try again.",
         "es": "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.",

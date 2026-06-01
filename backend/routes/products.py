@@ -13,6 +13,8 @@ router = APIRouter()
 
 
 def _usable(item: dict, market: str) -> bool:
+    if item.get("isExpired") is True:
+        return False
     status = str(item.get("status", "active")).lower()
     if status not in {"active", "approved", "published"}:
         return False

@@ -28,7 +28,6 @@ def _safe_aggregate_count(collection: str, fallback_limit: int = 2000) -> int:
         query = db.collection(collection).count()
         result = query.get()
         if result and result[0]:
-            # Firestore aggregation result API differs by version.
             value = getattr(result[0], 'value', None)
             if isinstance(value, int):
                 return value
@@ -155,7 +154,127 @@ class AdminRepository:
             'topSearches': self.top_searches(),
             'topProducts': self.top_products(),
             'connectors': self.connector_status(),
+            'recentAiQueries': self.recent_ai_queries(),
+            'failedScrapings': self.failed_scrapings(),
+            'flaggedProducts': self.flagged_products(),
+            'pendingLocalReviews': self.pending_local_reviews(),
+            'systemErrors': self.system_errors(),
         }
+
+    def recent_ai_queries(self, limit: int = 25) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        try:
+            docs = (
+                db.collection('ai_usage_logs')
+                .order_by('createdAt', direction='DESCENDING')
+                .limit(limit)
+                .stream()
+            )
+            for doc in docs:
+                data = doc.to_dict() or {}
+                items.append(
+                    {
+                        'id': doc.id,
+                        'subject': data.get('subject'),
+                        'uid': data.get('uid'),
+                        'count': data.get('count'),
+                        'blocked': data.get('blocked') is True,
+                        'createdAt': data.get('createdAt'),
+                    }
+                )
+        except Exception:
+            pass
+        return items
+
+    def failed_scrapings(self, limit: int = 25) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        try:
+            docs = db.collection('scrape_failures').order_by('createdAt', direction='DESCENDING').limit(limit).stream()
+            for doc in docs:
+                data = doc.to_dict() or {}
+                items.append(
+                    {
+                        'id': doc.id,
+                        'url': data.get('url'),
+                        'source': data.get('source'),
+                        'error': data.get('error'),
+                        'createdAt': data.get('createdAt'),
+                    }
+                )
+        except Exception:
+            try:
+                for doc in db.collection('api_connectors').limit(limit).stream():
+                    data = doc.to_dict() or {}
+                    if data.get('lastStatus') not in {None, '', 'ok', 'success'}:
+                        items.append(
+                            {
+                                'id': doc.id,
+                                'url': data.get('source') or doc.id,
+                                'source': data.get('source') or doc.id,
+                                'error': data.get('lastError') or data.get('lastStatus'),
+                                'createdAt': data.get('lastSyncAt'),
+                            }
+                        )
+            except Exception:
+                pass
+        return items
+
+    def flagged_products(self, limit: int = 25) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        try:
+            docs = db.collection('products').where('status', '==', 'needs_market_review').limit(limit).stream()
+            for doc in docs:
+                data = doc.to_dict() or {}
+                items.append(
+                    {
+                        'id': doc.id,
+                        'name': data.get('name') or data.get('title'),
+                        'store': data.get('store'),
+                        'adminIssue': data.get('adminIssue'),
+                        'countryCode': data.get('countryCode'),
+                    }
+                )
+        except Exception:
+            pass
+        return items
+
+    def pending_local_reviews(self, limit: int = 25) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        try:
+            docs = db.collection('local_offers').where('status', '==', 'pending').limit(limit).stream()
+            for doc in docs:
+                data = doc.to_dict() or {}
+                items.append(
+                    {
+                        'id': doc.id,
+                        'title': data.get('title') or data.get('name'),
+                        'storeId': data.get('storeId'),
+                        'merchantId': data.get('merchantId'),
+                        'countryCode': data.get('countryCode'),
+                        'createdAt': data.get('createdAt'),
+                    }
+                )
+        except Exception:
+            pass
+        return items
+
+    def system_errors(self, limit: int = 25) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        try:
+            docs = db.collection('system_errors').order_by('createdAt', direction='DESCENDING').limit(limit).stream()
+            for doc in docs:
+                data = doc.to_dict() or {}
+                items.append(
+                    {
+                        'id': doc.id,
+                        'path': data.get('path'),
+                        'message': data.get('message') or data.get('error'),
+                        'createdAt': data.get('createdAt'),
+                    }
+                )
+        except Exception:
+            pass
+        return items
 
     def top_searches(self, limit: int = 8) -> List[str]:
         try:
@@ -176,8 +295,6 @@ class AdminRepository:
             return []
 
     def top_products(self, limit: int = 6) -> List[Dict[str, Any]]:
-        # Pull a small window, then show only market-ready products.
-        # This prevents GLOBAL/unclean imported products from making admin look unfinished.
         try:
             try:
                 docs = (

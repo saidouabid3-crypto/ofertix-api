@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from core.api_errors import localized_error_response
+from core.ai_rate_limit import enforce_ai_rate_limit
 from schemas.ai_deal_brain import (
     AnalyzeGlobalRequest,
     GlobalDealAnalysisResponse,
@@ -20,7 +21,10 @@ router = APIRouter(prefix="/ai-deal-brain", tags=["AI Deal Brain Pro"])
 
 
 @router.post("/extract-url")
-async def extract_url(request: ProductExtractRequest):
+async def extract_url(
+    request: ProductExtractRequest,
+    _quota: dict = Depends(enforce_ai_rate_limit),
+):
     try:
         return await scraper_service.extract_product(request)
     except HTTPException:
@@ -36,7 +40,10 @@ async def extract_url(request: ProductExtractRequest):
 
 
 @router.post("/analyze-global", response_model=GlobalDealAnalysisResponse)
-async def analyze_global(request: AnalyzeGlobalRequest):
+async def analyze_global(
+    request: AnalyzeGlobalRequest,
+    _quota: dict = Depends(enforce_ai_rate_limit),
+):
     if not request.product.title and request.product.currentPrice <= 0:
         return localized_error_response(
             status_code=422,
@@ -66,7 +73,10 @@ async def analyze_global(request: AnalyzeGlobalRequest):
 
 
 @router.post("/negotiate", response_model=None)
-async def negotiate(request: NegotiationRequest):
+async def negotiate(
+    request: NegotiationRequest,
+    _quota: dict = Depends(enforce_ai_rate_limit),
+):
     try:
         script = await unified_ai_service.generate_negotiation(request)
         return {"script": script}
@@ -81,7 +91,10 @@ async def negotiate(request: NegotiationRequest):
 
 
 @router.post("/analyze-url", response_model=GlobalDealAnalysisResponse)
-async def analyze_url(request: ProductExtractRequest):
+async def analyze_url(
+    request: ProductExtractRequest,
+    _quota: dict = Depends(enforce_ai_rate_limit),
+):
     try:
         product = await scraper_service.extract_product(request)
     except HTTPException:

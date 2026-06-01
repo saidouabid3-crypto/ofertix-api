@@ -30,7 +30,18 @@ def _list(value):
     return result
 
 
-def item_available_for_country(item: dict, country: str) -> bool:
+def item_available_for_country(item: dict, country: str, *, strict: bool = True) -> bool:
+    """Country isolation for Ofertix Elite.
+
+    Strict mode (default): users only see products whose ``countryCode`` matches
+    their market. Explicitly global catalog items remain available when
+  ``isExplicitlyGlobal`` is true and the user's country is listed in
+    ``availableCountries`` / ``shipsTo``.
+    """
+
+    if item.get("isExpired") is True:
+        return False
+
     code = normalize_market(country)
 
     item_country = _normalize_country_code(
@@ -46,6 +57,13 @@ def item_available_for_country(item: dict, country: str) -> bool:
 
     if pickup_only:
         return seller_country == code or item_country == code
+
+    if strict:
+        if bool(item.get("isExplicitlyGlobal") is True):
+            return code in available or code in ships_to or "global" in available
+        if item_country == "global":
+            return False
+        return item_country == code
 
     if item_country == "global":
         return "global" in available or code in available or code in ships_to
