@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from math import asin, cos, radians, sin, sqrt
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+
+from core.auth import optional_user, require_admin
 
 router = APIRouter(tags=["ofertix-local"])
 
@@ -78,7 +81,6 @@ class _LocalRepository:
         try:
             import firebase_admin
             from firebase_admin import firestore
-
             if not firebase_admin._apps:
                 return None
             return firestore.client()
@@ -90,7 +92,14 @@ class _LocalRepository:
             return None
         return self._db.collection(name)
 
-    def list_stores(self, *, country: str = "es", city: Optional[str] = None, featured: Optional[bool] = None, limit: int = 30) -> List[Dict[str, Any]]:
+    def list_stores(
+        self,
+        *,
+        country: str = "es",
+        city: Optional[str] = None,
+        featured: Optional[bool] = None,
+        limit: int = 30,
+    ) -> List[Dict[str, Any]]:
         collection = self._collection("local_stores")
         if collection is not None:
             query = collection.where("country_code", "==", country.lower()).where("active", "==", True)
@@ -100,15 +109,25 @@ class _LocalRepository:
                 query = query.where("featured", "==", featured)
             docs = query.limit(limit).stream()
             return [self._with_id(doc.id, doc.to_dict()) for doc in docs]
-
-        values = [s for s in self._stores.values() if s.get("active", True) and s.get("country_code", "es") == country.lower()]
+        values = [
+            s for s in self._stores.values()
+            if s.get("active", True) and s.get("country_code", "es") == country.lower()
+        ]
         if city:
             values = [s for s in values if s.get("city") == city]
         if featured is not None:
             values = [s for s in values if bool(s.get("featured")) == featured]
         return values[:limit]
 
-    def nearby_stores(self, *, lat: float, lng: float, radius_km: float, category: Optional[str], limit: int) -> List[Dict[str, Any]]:
+    def nearby_stores(
+        self,
+        *,
+        lat: float,
+        lng: float,
+        radius_km: float,
+        category: Optional[str],
+        limit: int,
+    ) -> List[Dict[str, Any]]:
         stores = self.list_stores(limit=500)
         ranked: List[Dict[str, Any]] = []
         for store in stores:
@@ -140,7 +159,7 @@ class _LocalRepository:
         data = payload.model_dump(exclude={"id"})
         data.update({
             "id": store_id,
-            "merchant_id": merchant_id or data.get("merchant_id") or "mobile_merchant",
+            "merchant_id": merchant_id or data.get("merchant_id") or "anonymous",
             "country_code": data.get("country_code", "es").lower(),
             "views": 0,
             "offer_count": 0,
@@ -153,7 +172,14 @@ class _LocalRepository:
         self._stores[store_id] = data
         return data
 
-    def list_offers(self, *, status: Optional[str] = "active", country: str = "es", city: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    def list_offers(
+        self,
+        *,
+        status: Optional[str] = "active",
+        country: str = "es",
+        city: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
         collection = self._collection("local_offers")
         if collection is not None:
             query = collection.where("country_code", "==", country.lower())
@@ -163,7 +189,6 @@ class _LocalRepository:
                 query = query.where("city", "==", city)
             docs = query.limit(limit).stream()
             return [self._with_id(doc.id, doc.to_dict()) for doc in docs]
-
         values = [o for o in self._offers.values() if o.get("country_code", "es") == country.lower()]
         if status:
             values = [o for o in values if o.get("status") == status]
@@ -171,7 +196,15 @@ class _LocalRepository:
             values = [o for o in values if o.get("city") == city]
         return values[:limit]
 
-    def nearby_offers(self, *, lat: float, lng: float, radius_km: float, category: Optional[str], limit: int) -> List[Dict[str, Any]]:
+    def nearby_offers(
+        self,
+        *,
+        lat: float,
+        lng: float,
+        radius_km: float,
+        category: Optional[str],
+        limit: int,
+    ) -> List[Dict[str, Any]]:
         offers = self.list_offers(limit=500)
         ranked: List[Dict[str, Any]] = []
         for offer in offers:
@@ -190,18 +223,29 @@ class _LocalRepository:
     def store_offers(self, store_id: str) -> List[Dict[str, Any]]:
         collection = self._collection("local_offers")
         if collection is not None:
-            docs = collection.where("store_id", "==", store_id).where("status", "==", "active").limit(100).stream()
+            docs = (
+                collection
+                .where("store_id", "==", store_id)
+                .where("status", "==", "active")
+                .limit(100)
+                .stream()
+            )
             return [self._with_id(doc.id, doc.to_dict()) for doc in docs]
-        return [o for o in self._offers.values() if o.get("store_id") == store_id and o.get("status") == "active"]
+        return [
+            o for o in self._offers.values()
+            if o.get("store_id") == store_id and o.get("status") == "active"
+        ]
 
     def save_offer(self, payload: LocalOfferPayload, merchant_id: str) -> Dict[str, Any]:
         offer_id = payload.id or f"offer_{uuid4().hex[:16]}"
         data = payload.model_dump(exclude={"id"})
         if data["discount_percent"] <= 0 and data["old_price"] > data["new_price"] > 0:
-            data["discount_percent"] = round(((data["old_price"] - data["new_price"]) / data["old_price"]) * 100)
+            data["discount_percent"] = round(
+                ((data["old_price"] - data["new_price"]) / data["old_price"]) * 100
+            )
         data.update({
             "id": offer_id,
-            "merchant_id": merchant_id or "mobile_merchant",
+            "merchant_id": merchant_id or "anonymous",
             "country_code": data.get("country_code", "es").lower(),
             "risk_level": self._risk_level(data),
             "risk_score": self._risk_score(data),
@@ -218,7 +262,12 @@ class _LocalRepository:
 
     def update_offer_status(self, offer_id: str, status: str, reason: str = "") -> Dict[str, Any]:
         collection = self._collection("local_offers")
-        patch = {"status": status, "review_reason": reason, "reviewed_at": _now(), "updated_at": _now()}
+        patch = {
+            "status": status,
+            "review_reason": reason,
+            "reviewed_at": _now(),
+            "updated_at": _now(),
+        }
         if collection is not None:
             doc = collection.document(offer_id).get()
             if not doc.exists:
@@ -277,85 +326,158 @@ class _LocalRepository:
 repo = _LocalRepository()
 
 
-def _merchant_id(x_user_id: Optional[str], authorization: Optional[str]) -> str:
-    if x_user_id:
-        return x_user_id
-    if authorization:
-        return "authenticated_merchant"
-    return "mobile_merchant"
+def _uid_from_user(current_user: dict | None) -> str:
+    if current_user and current_user.get("uid"):
+        return current_user["uid"]
+    return "anonymous"
 
+
+# ---------------------------------------------------------------------------
+# Public store endpoints
+# ---------------------------------------------------------------------------
 
 @router.get("/api/local/stores")
-def list_local_stores(country: str = "es", city: Optional[str] = None, featured: Optional[bool] = None, limit: int = Query(30, ge=1, le=100)):
-    return {"items": repo.list_stores(country=country, city=city, featured=featured, limit=limit)}
+async def list_local_stores(
+    country: str = "es",
+    city: Optional[str] = None,
+    featured: Optional[bool] = None,
+    limit: int = Query(30, ge=1, le=100),
+):
+    items = await asyncio.to_thread(
+        repo.list_stores, country=country, city=city, featured=featured, limit=limit
+    )
+    return {"items": items}
 
 
 @router.get("/api/local/stores/nearby")
-def nearby_local_stores(lat: float, lng: float, radiusKm: float = Query(10, ge=1, le=100), category: Optional[str] = None, limit: int = Query(30, ge=1, le=100)):
-    return {"items": repo.nearby_stores(lat=lat, lng=lng, radius_km=radiusKm, category=category, limit=limit)}
+async def nearby_local_stores(
+    lat: float,
+    lng: float,
+    radiusKm: float = Query(10, ge=1, le=100),
+    category: Optional[str] = None,
+    limit: int = Query(30, ge=1, le=100),
+):
+    items = await asyncio.to_thread(
+        repo.nearby_stores, lat=lat, lng=lng, radius_km=radiusKm, category=category, limit=limit
+    )
+    return {"items": items}
 
 
 @router.get("/api/local/stores/{store_id}")
-def get_local_store(store_id: str):
-    return {"store": repo.get_store(store_id)}
+async def get_local_store(store_id: str):
+    store = await asyncio.to_thread(repo.get_store, store_id)
+    return {"store": store}
 
 
 @router.get("/api/local/stores/{store_id}/offers")
-def get_local_store_offers(store_id: str):
-    return {"items": repo.store_offers(store_id)}
+async def get_local_store_offers(store_id: str):
+    items = await asyncio.to_thread(repo.store_offers, store_id)
+    return {"items": items}
 
 
 @router.get("/api/local/offers/nearby")
-def nearby_local_offers(lat: float, lng: float, radiusKm: float = Query(10, ge=1, le=100), category: Optional[str] = None, limit: int = Query(50, ge=1, le=100)):
-    return {"items": repo.nearby_offers(lat=lat, lng=lng, radius_km=radiusKm, category=category, limit=limit)}
+async def nearby_local_offers(
+    lat: float,
+    lng: float,
+    radiusKm: float = Query(10, ge=1, le=100),
+    category: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=100),
+):
+    items = await asyncio.to_thread(
+        repo.nearby_offers, lat=lat, lng=lng, radius_km=radiusKm, category=category, limit=limit
+    )
+    return {"items": items}
 
 
 @router.get("/api/local/offers/hot")
-def hot_local_offers(country: str = "es", city: Optional[str] = None, limit: int = Query(30, ge=1, le=100)):
-    items = repo.list_offers(status="active", country=country, city=city, limit=limit)
-    items.sort(key=lambda item: (int(item.get("clicks") or 0), int(item.get("discount_percent") or 0)), reverse=True)
+async def hot_local_offers(
+    country: str = "es",
+    city: Optional[str] = None,
+    limit: int = Query(30, ge=1, le=100),
+):
+    items = await asyncio.to_thread(
+        repo.list_offers, status="active", country=country, city=city, limit=limit
+    )
+    items.sort(
+        key=lambda item: (int(item.get("clicks") or 0), int(item.get("discount_percent") or 0)),
+        reverse=True,
+    )
     return {"items": items[:limit]}
 
 
 @router.post("/api/local/offers/{offer_id}/click")
-def click_local_offer(offer_id: str):
-    return {"offer": repo.click_offer(offer_id)}
+async def click_local_offer(offer_id: str):
+    offer = await asyncio.to_thread(repo.click_offer, offer_id)
+    return {"offer": offer}
 
+
+# ---------------------------------------------------------------------------
+# Merchant endpoints — identity verified from Firebase JWT
+# ---------------------------------------------------------------------------
 
 @router.get("/api/merchant/stores")
-def merchant_stores(x_user_id: Optional[str] = Header(default=None), authorization: Optional[str] = Header(default=None)):
-    merchant = _merchant_id(x_user_id, authorization)
-    return {"items": [store for store in repo.list_stores(limit=100) if store.get("merchant_id") in {merchant, "mobile_merchant"}]}
+async def merchant_stores(current_user: dict | None = Depends(optional_user)):
+    merchant = _uid_from_user(current_user)
+    all_stores = await asyncio.to_thread(repo.list_stores, limit=100)
+    return {"items": [s for s in all_stores if s.get("merchant_id") == merchant]}
 
 
 @router.post("/api/merchant/stores")
-def create_merchant_store(payload: LocalStorePayload, x_user_id: Optional[str] = Header(default=None), authorization: Optional[str] = Header(default=None)):
-    return {"store": repo.save_store(payload, _merchant_id(x_user_id, authorization))}
+async def create_merchant_store(
+    payload: LocalStorePayload,
+    current_user: dict | None = Depends(optional_user),
+):
+    merchant = _uid_from_user(current_user)
+    store = await asyncio.to_thread(repo.save_store, payload, merchant)
+    return {"store": store}
 
 
 @router.get("/api/merchant/offers")
-def merchant_offers(x_user_id: Optional[str] = Header(default=None), authorization: Optional[str] = Header(default=None)):
-    merchant = _merchant_id(x_user_id, authorization)
-    return {"items": [offer for offer in repo.list_offers(status=None, limit=100) if offer.get("merchant_id") in {merchant, "mobile_merchant"}]}
+async def merchant_offers(current_user: dict | None = Depends(optional_user)):
+    merchant = _uid_from_user(current_user)
+    all_offers = await asyncio.to_thread(repo.list_offers, status=None, limit=100)
+    return {"items": [o for o in all_offers if o.get("merchant_id") == merchant]}
 
 
 @router.post("/api/merchant/offers")
-def create_merchant_offer(payload: LocalOfferPayload, x_user_id: Optional[str] = Header(default=None), authorization: Optional[str] = Header(default=None)):
+async def create_merchant_offer(
+    payload: LocalOfferPayload,
+    current_user: dict | None = Depends(optional_user),
+):
     payload.status = "pending"
-    return {"offer": repo.save_offer(payload, _merchant_id(x_user_id, authorization))}
+    merchant = _uid_from_user(current_user)
+    offer = await asyncio.to_thread(repo.save_offer, payload, merchant)
+    return {"offer": offer}
 
+
+# ---------------------------------------------------------------------------
+# Admin endpoints — require verified admin role
+# ---------------------------------------------------------------------------
 
 @router.get("/api/admin/local/offers/pending")
-def admin_pending_local_offers(limit: int = Query(50, ge=1, le=100)):
-    return {"items": repo.list_offers(status="pending", limit=limit)}
+async def admin_pending_local_offers(
+    limit: int = Query(50, ge=1, le=100),
+    _: dict = Depends(require_admin),
+):
+    items = await asyncio.to_thread(repo.list_offers, status="pending", limit=limit)
+    return {"items": items}
 
 
 @router.post("/api/admin/local/offers/{offer_id}/approve")
-def admin_approve_local_offer(offer_id: str):
-    return {"offer": repo.update_offer_status(offer_id, "active")}
+async def admin_approve_local_offer(
+    offer_id: str,
+    _: dict = Depends(require_admin),
+):
+    offer = await asyncio.to_thread(repo.update_offer_status, offer_id, "active")
+    return {"offer": offer}
 
 
 @router.post("/api/admin/local/offers/{offer_id}/reject")
-def admin_reject_local_offer(offer_id: str, payload: Dict[str, Any] | None = None):
+async def admin_reject_local_offer(
+    offer_id: str,
+    payload: Dict[str, Any] | None = None,
+    _: dict = Depends(require_admin),
+):
     reason = str((payload or {}).get("reason") or "Rejected by admin")
-    return {"offer": repo.update_offer_status(offer_id, "rejected", reason=reason)}
+    offer = await asyncio.to_thread(repo.update_offer_status, offer_id, "rejected", reason)
+    return {"offer": offer}

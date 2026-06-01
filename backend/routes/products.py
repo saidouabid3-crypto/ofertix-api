@@ -1,4 +1,9 @@
+from __future__ import annotations
+
+import asyncio
+
 from fastapi import APIRouter, Query
+
 from core.firebase import db
 from core.market_config import normalize_market, SUPPORTED_MARKETS
 from utils.market_filter import item_available_for_country, normalize_item_market_fields
@@ -7,29 +12,37 @@ from utils.product_standard import normalize_product
 router = APIRouter()
 
 
-def _usable(item, market: str) -> bool:
-    status = str(item.get('status', 'active')).lower()
-    if status not in {'active', 'approved', 'published'}:
+def _usable(item: dict, market: str) -> bool:
+    status = str(item.get("status", "active")).lower()
+    if status not in {"active", "approved", "published"}:
         return False
-    if item.get('visibleToUsers') is False:
+    if item.get("visibleToUsers") is False:
         return False
-    if not item.get('image') and not item.get('mainImage'):
+    if not item.get("image") and not item.get("mainImage"):
         return False
-    if float(item.get('newPrice') or item.get('price') or 0) <= 0:
+    if float(item.get("newPrice") or item.get("price") or 0) <= 0:
         return False
     if not item_available_for_country(item, market):
         return False
-    if str(item.get('categoryGroup') or item.get('category')).lower() == 'kitchen':
-        hay = f"{item.get('name','')} {item.get('description','')}".lower()
-        negatives = ['shoe', 'sneaker', 'ring', 'jewelry', 'earring', 'necklace', 'watch', 'phone', 'dress', 'pants', 'bag']
+    if str(item.get("categoryGroup") or item.get("category")).lower() == "kitchen":
+        hay = f"{item.get('name', '')} {item.get('description', '')}".lower()
+        negatives = ["shoe", "sneaker", "ring", "jewelry", "earring", "necklace", "watch", "phone", "dress", "pants", "bag"]
         if any(n in hay for n in negatives):
             return False
     return True
 
 
-@router.get('/products')
-def get_products(
-    country: str = 'es',
+def _stream_products(read_limit: int) -> list[dict]:
+    try:
+        docs = db.collection("products").where("visibleToUsers", "==", True).limit(read_limit).stream()
+    except Exception:
+        docs = db.collection("products").limit(read_limit).stream()
+    return [{"id": doc.id, **(doc.to_dict() or {})} for doc in docs]
+
+
+@router.get("/products")
+async def get_products(
+    country: str = "es",
     limit: int = Query(50, ge=1, le=500),
     page: int = Query(1, ge=1, le=200),
     category: str | None = None,
@@ -38,28 +51,27 @@ def get_products(
     market = normalize_market(country)
     read_limit = min(max(limit * 6, 240), 1000)
     offset_to_skip = (page - 1) * limit
-    try:
-        docs = db.collection('products').where('visibleToUsers', '==', True).limit(read_limit).stream()
-    except Exception:
-        docs = db.collection('products').limit(read_limit).stream()
 
-    results = []
+    raw_docs = await asyncio.to_thread(_stream_products, read_limit)
+
+    results: list[dict] = []
     skipped = 0
-    seen = set()
-    wanted_category = (category or '').strip().lower()
-    wanted_store = (store or '').strip().lower()
+    seen: set[str] = set()
+    wanted_category = (category or "").strip().lower()
+    wanted_store = (store or "").strip().lower()
 
-    for doc in docs:
-        raw = doc.to_dict() or {}
-        raw['id'] = doc.id
-        item = normalize_product(normalize_item_market_fields(raw, fallback_country=market), fallback_country=market)
+    for raw in raw_docs:
+        item = normalize_product(
+            normalize_item_market_fields(raw, fallback_country=market),
+            fallback_country=market,
+        )
         if not _usable(item, market):
             continue
-        if wanted_category and wanted_category not in str(item.get('categoryGroup') or item.get('category') or '').lower():
+        if wanted_category and wanted_category not in str(item.get("categoryGroup") or item.get("category") or "").lower():
             continue
-        if wanted_store and wanted_store not in str(item.get('store') or item.get('source') or '').lower():
+        if wanted_store and wanted_store not in str(item.get("store") or item.get("source") or "").lower():
             continue
-        fp = item.get('fingerprint') or f"{item.get('store')}|{item.get('name')}|{item.get('newPrice')}"
+        fp = item.get("fingerprint") or f"{item.get('store')}|{item.get('name')}|{item.get('newPrice')}"
         if fp in seen:
             continue
         seen.add(fp)
@@ -71,11 +83,11 @@ def get_products(
             break
 
     return {
-        'country': market,
-        'currency': SUPPORTED_MARKETS[market]['currency'],
-        'page': page,
-        'limit': limit,
-        'count': len(results),
-        'hasMore': len(results) == limit,
-        'products': results,
+        "country": market,
+        "currency": SUPPORTED_MARKETS[market]["currency"],
+        "page": page,
+        "limit": limit,
+        "count": len(results),
+        "hasMore": len(results) == limit,
+        "products": results,
     }
