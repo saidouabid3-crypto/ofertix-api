@@ -13,7 +13,15 @@ def _score(item: dict[str, Any]) -> float:
     return float(item.get('dealScore') or 0) + float(item.get('trustScore') or 0) * 0.35 + float(item.get('qualityScore') or 0) * 0.20
 
 
+def _is_blocked_store(item: dict[str, Any]) -> bool:
+    source = str(item.get('source') or '').strip().lower()
+    store = str(item.get('store') or '').strip().lower()
+    return source == 'aliexpress' or 'aliexpress' in store or store.startswith('ae-')
+
+
 def _usable(item: dict[str, Any], market: str) -> bool:
+    if _is_blocked_store(item):
+        return False
     status = str(item.get('status', 'active')).lower()
     if status not in {'active', 'approved', 'published'}:
         return False

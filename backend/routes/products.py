@@ -12,7 +12,15 @@ from utils.product_standard import normalize_product
 router = APIRouter()
 
 
+def _is_blocked_store(item: dict) -> bool:
+    source = str(item.get("source") or "").strip().lower()
+    store = str(item.get("store") or "").strip().lower()
+    return source == "aliexpress" or "aliexpress" in store or store.startswith("ae-")
+
+
 def _usable(item: dict, market: str) -> bool:
+    if _is_blocked_store(item):
+        return False
     if item.get("isExpired") is True:
         return False
     status = str(item.get("status", "active")).lower()

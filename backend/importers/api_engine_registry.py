@@ -1,9 +1,9 @@
 from core.market_config import SUPPORTED_MARKETS
 
 STORE_CONNECTORS = {
-    'es': ['amazon_es', 'aliexpress_global', 'miravia_es', 'carrefour_es', 'mediamarkt_es', 'pccomponentes_es'],
-    'ma': ['jumia_ma', 'avito_ma', 'marjane_ma', 'electroplanet_ma', 'aliexpress_global'],
-    'dz': ['ouedkniss_dz', 'local_dz', 'aliexpress_global'],
+    'es': ['amazon_es', 'miravia_es', 'carrefour_es', 'mediamarkt_es', 'pccomponentes_es'],
+    'ma': ['jumia_ma', 'avito_ma', 'marjane_ma', 'electroplanet_ma'],
+    'dz': ['ouedkniss_dz', 'local_dz'],
     'fr': ['amazon_fr', 'cdiscount_fr', 'fnac_fr', 'carrefour_fr'],
     'pt': ['worten_pt', 'fnac_pt', 'amazon_es'],
     'it': ['amazon_it', 'mediaworld_it', 'unieuro_it'],

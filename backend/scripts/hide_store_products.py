@@ -17,6 +17,9 @@ def matches_store(data: dict, store_query: str) -> bool:
     product_url = _text(data.get("productUrl") or data.get("url"))
     affiliate_url = _text(data.get("affiliateUrl"))
 
+    if target in {"aliexpress", "ali express"}:
+        return source == "aliexpress" or "aliexpress" in store or store.startswith("ae-")
+
     if target in store or store in target:
         return True
     if target in source or source in target:
@@ -40,10 +43,12 @@ def main():
     parser = argparse.ArgumentParser(
         description="Safely hide all products from one store/source in Firestore without deleting them."
     )
-    parser.add_argument("--store", required=True, help="Store name, e.g. AliExpress, DHgate")
-    parser.add_argument("--dry-run", action="store_true", help="Only count matched docs, do not update")
+    parser.add_argument("--store", default="AliExpress", help="Store/source to hide. Defaults to AliExpress.")
+    parser.add_argument("--dry-run", action="store_true", default=True, help="Only count matched docs, do not update")
+    parser.add_argument("--apply", action="store_true", help="Archive matched docs. Without this flag the script is dry-run only.")
     parser.add_argument("--limit", type=int, default=0, help="Optional max docs to scan")
     args = parser.parse_args()
+    dry_run = not args.apply
 
     scanned = 0
     matched = 0
@@ -64,7 +69,7 @@ def main():
             if data.get("visibleToUsers") is False and _text(data.get("status")) == "archived":
                 already_hidden += 1
             else:
-                if not args.dry_run:
+                if not dry_run:
                     batch.update(doc.reference, {
                         "visibleToUsers": False,
                         "status": "archived",
@@ -89,13 +94,13 @@ def main():
         if args.limit and scanned >= args.limit:
             break
 
-    if not args.dry_run:
+    if not dry_run:
         commit_batch(batch, batch_count)
 
     print(f"Scanned: {scanned}")
     print(f"Matched: {matched}")
     print(f"Already hidden: {already_hidden}")
-    if args.dry_run:
+    if dry_run:
         print(f"Would hide: {updated}")
     else:
         print(f"Hidden/archived now: {updated}")

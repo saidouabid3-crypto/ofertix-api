@@ -1,5 +1,4 @@
 from importers.pccomponentes import import_pccomponentes
-from importers.aliexpress import import_aliexpress
 from importers.carrefour import import_carrefour
 from importers.bosh import import_bosh
 from importers.mediamarkt import import_mediamarkt
@@ -11,7 +10,6 @@ def run_all_importers():
     print("Starting importers...")
 
     import_pccomponentes()
-    import_aliexpress()
     import_carrefour()
     import_bosh()
     import_mediamarkt()
