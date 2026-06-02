@@ -42,9 +42,17 @@ class UnifiedAIService:
         """The locale resolved for the current request."""
         return get_locale()
 
-    def llm_available(self, preferred_provider: str | None = None) -> bool:
+    def llm_available(
+        self,
+        preferred_provider: str | None = None,
+        *,
+        provider_role: str | None = None,
+    ) -> bool:
         """Whether a usable LLM provider is configured for this deployment."""
-        return llm_transport.is_configured(preferred_provider)
+        return llm_transport.is_configured(
+            preferred_provider,
+            provider_role=provider_role,
+        )
 
     # --- AI Deal Brain Pro: structured global analysis -------------------
 

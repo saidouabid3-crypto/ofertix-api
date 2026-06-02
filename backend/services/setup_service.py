@@ -14,8 +14,9 @@ class SetupService:
         warnings: list[str] = []
         if 'OFERTIX_ADMIN_EMAILS' in missing:
             warnings.append('Admin emails are not configured. Render env OFERTIX_ADMIN_EMAILS is required for secure admin access.')
-        if 'GROQ_API_KEY' in missing:
-            warnings.append('Groq AI key is missing. AI features should show setup-needed instead of crashing.')
+        ai_keys = {'GROQ_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY'}
+        if ai_keys <= set(missing):
+            warnings.append('No AI provider key is configured. AI features should show setup-needed instead of crashing.')
         if any(key in missing for key in ['CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET']):
             warnings.append('Cloudinary is not fully configured. Reels feed can play existing URLs, but uploads need setup.')
         return {

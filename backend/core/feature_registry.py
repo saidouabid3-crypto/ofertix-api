@@ -19,20 +19,28 @@ class FeatureDefinition:
     name: str
     status: FeatureStatus
     requires_env: tuple[str, ...] = ()
+    requires_any_env: tuple[str, ...] = ()
     user_visible: bool = True
     admin_visible: bool = True
     reason: str = ""
 
     def to_dict(self, env_status: dict[str, bool] | None = None) -> dict[str, Any]:
         missing = []
+        missing_any = []
         if env_status is not None:
             missing = [key for key in self.requires_env if not env_status.get(key, False)]
+            if self.requires_any_env and not any(
+                env_status.get(key, False) for key in self.requires_any_env
+            ):
+                missing_any = list(self.requires_any_env)
         data = asdict(self)
         data["status"] = self.status.value
         data["requires_env"] = list(self.requires_env)
+        data["requires_any_env"] = list(self.requires_any_env)
         data["missing_env"] = missing
-        data["ready"] = self.status == FeatureStatus.ACTIVE and not missing
-        if missing and self.status == FeatureStatus.ACTIVE:
+        data["missing_any_env"] = missing_any
+        data["ready"] = self.status == FeatureStatus.ACTIVE and not missing and not missing_any
+        if (missing or missing_any) and self.status == FeatureStatus.ACTIVE:
             data["effective_status"] = FeatureStatus.NEEDS_SETUP.value
         else:
             data["effective_status"] = self.status.value
@@ -43,10 +51,10 @@ FEATURES: dict[str, FeatureDefinition] = {
     "home": FeatureDefinition("home", "Home deals", FeatureStatus.ACTIVE),
     "products": FeatureDefinition("products", "Products", FeatureStatus.ACTIVE),
     "search": FeatureDefinition("search", "Search", FeatureStatus.ACTIVE),
-    "ai_search": FeatureDefinition("ai_search", "AI search", FeatureStatus.ACTIVE, requires_env=("GROQ_API_KEY",)),
-    "ai_brain": FeatureDefinition("ai_brain", "AI Deal Brain", FeatureStatus.ACTIVE, requires_env=("GROQ_API_KEY",)),
-    "scan": FeatureDefinition("scan", "Scan", FeatureStatus.ACTIVE, requires_env=("GROQ_API_KEY",)),
-    "visual_search": FeatureDefinition("visual_search", "Visual search", FeatureStatus.ACTIVE, requires_env=("GROQ_API_KEY",)),
+    "ai_search": FeatureDefinition("ai_search", "AI search", FeatureStatus.ACTIVE, requires_any_env=("GROQ_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY")),
+    "ai_brain": FeatureDefinition("ai_brain", "AI Deal Brain", FeatureStatus.ACTIVE, requires_any_env=("GROQ_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY")),
+    "scan": FeatureDefinition("scan", "Scan", FeatureStatus.ACTIVE, requires_any_env=("GEMINI_API_KEY", "OPENAI_API_KEY")),
+    "visual_search": FeatureDefinition("visual_search", "Visual search", FeatureStatus.ACTIVE, requires_any_env=("GEMINI_API_KEY", "OPENAI_API_KEY")),
     "voice_search": FeatureDefinition("voice_search", "Voice search", FeatureStatus.ACTIVE),
     "reels": FeatureDefinition("reels", "Deal Reels", FeatureStatus.ACTIVE, requires_env=("CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET")),
     "messages": FeatureDefinition("messages", "Messages", FeatureStatus.ACTIVE),
@@ -73,6 +81,7 @@ def all_required_env_keys() -> list[str]:
     keys: set[str] = set()
     for feature in FEATURES.values():
         keys.update(feature.requires_env)
+        keys.update(feature.requires_any_env)
     keys.update({"OFERTIX_ADMIN_EMAILS", "FIREBASE_PROJECT_ID"})
     return sorted(keys)
 
@@ -97,4 +106,9 @@ def is_user_visible(key: str) -> bool:
         return False
     if feature.status != FeatureStatus.ACTIVE or not feature.user_visible:
         return False
-    return all(bool(__import__('os').getenv(env, '').strip()) for env in feature.requires_env)
+    required_ok = all(bool(__import__('os').getenv(env, '').strip()) for env in feature.requires_env)
+    any_ok = (
+        not feature.requires_any_env
+        or any(bool(__import__('os').getenv(env, '').strip()) for env in feature.requires_any_env)
+    )
+    return required_ok and any_ok

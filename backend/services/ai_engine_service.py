@@ -34,7 +34,7 @@ from schemas.ai_deal_brain import (
     VerdictCommand,
 )
 from services.currency_service import currency_service
-from services.llm_transport import llm_transport
+from services.llm_transport import LLMTransportError, llm_transport
 from services.locale_prompt_engine import locale_prompt_engine
 
 logger = logging.getLogger("ofertix.ai.engine")
@@ -64,30 +64,27 @@ class AiEngineService:
             currency=request.user.currency,
         )
 
-        if llm_transport.is_configured():
-            try:
-                system_prompt = locale_prompt_engine.build_global_deal_system_prompt(
-                    locale
-                )
-                raw = await llm_transport.complete_json(
-                    system_prompt=system_prompt,
-                    user_content=json.dumps(payload, ensure_ascii=False),
-                    temperature=0.2,
-                )
-                parsed = self._parse_response(raw, request)
-                return self._merge_with_safe_defaults(parsed, request, payload)
-            except Exception as exc:  # noqa: BLE001 - fall back deterministically
-                logger.warning(
-                    "LLM analysis failed; deterministic fallback used: %s", exc
-                )
-
-        return self._deterministic_analysis(request, payload)
+        try:
+            system_prompt = locale_prompt_engine.build_global_deal_system_prompt(locale)
+            raw = await llm_transport.complete_json(
+                system_prompt=system_prompt,
+                user_content=json.dumps(payload, ensure_ascii=False),
+                temperature=0.2,
+                provider_role="premium",
+            )
+            parsed = self._parse_response(raw, request)
+            return self._merge_with_safe_defaults(parsed, request, payload)
+        except LLMTransportError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LLM analysis failed without usable fallback: %s", exc)
+            raise LLMTransportError(
+                "AI product analysis failed before a structured response was created.",
+                code="AI_ANALYSIS_FAILED",
+                role="premium",
+            ) from exc
 
     async def generate_negotiation(self, request: NegotiationRequest) -> str:
-        fallback = self._fallback_negotiation_script(request)
-        if not llm_transport.is_configured():
-            return fallback
-
         system_prompt = locale_prompt_engine.build_negotiation_system_prompt(
             request.sellerLanguage
         )
@@ -105,12 +102,25 @@ class AiEngineService:
                     system_prompt=system_prompt,
                     user_content=user_content,
                     temperature=0.35,
+                    provider_role="premium",
                 )
             ).strip()
-            return result[:1200] if result else fallback
+            if not result:
+                raise LLMTransportError(
+                    "AI negotiation provider returned an empty response.",
+                    code="AI_EMPTY_RESPONSE",
+                    role="premium",
+                )
+            return result[:1200]
+        except LLMTransportError:
+            raise
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Negotiation LLM failed; fallback used: %s", exc)
-            return fallback
+            logger.warning("Negotiation LLM failed without usable fallback: %s", exc)
+            raise LLMTransportError(
+                "AI negotiation generation failed.",
+                code="AI_NEGOTIATION_FAILED",
+                role="premium",
+            ) from exc
 
     async def _build_payload(self, request: AnalyzeGlobalRequest) -> dict[str, Any]:
         product = request.product

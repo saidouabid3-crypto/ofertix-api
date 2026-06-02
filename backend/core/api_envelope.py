@@ -42,6 +42,7 @@ _SKIP_PREFIXES = (
     "/redoc",
     "/openapi.json",
     "/health",
+    "/api/ai",
 )
 
 

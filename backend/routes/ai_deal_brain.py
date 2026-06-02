@@ -58,9 +58,10 @@ async def analyze_global(
         logger.warning("analyze-global LLM error: %s", exc)
         return localized_error_response(
             status_code=503,
-            code="AI_UNAVAILABLE",
+            code=exc.code,
             message_id="ai_unavailable",
             detail=str(exc),
+            extra_meta={"providers": exc.providers, "role": exc.role or "premium"},
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("analyze-global failed: %s", exc)
@@ -80,6 +81,15 @@ async def negotiate(
     try:
         script = await unified_ai_service.generate_negotiation(request)
         return {"script": script}
+    except LLMTransportError as exc:
+        logger.warning("negotiate LLM error: %s", exc)
+        return localized_error_response(
+            status_code=503,
+            code=exc.code,
+            message_id="ai_unavailable",
+            detail=str(exc),
+            extra_meta={"providers": exc.providers, "role": exc.role or "premium"},
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("negotiate failed: %s", exc)
         return localized_error_response(
@@ -123,9 +133,10 @@ async def analyze_url(
         logger.warning("analyze-url LLM error: %s", exc)
         return localized_error_response(
             status_code=503,
-            code="AI_UNAVAILABLE",
+            code=exc.code,
             message_id="ai_unavailable",
             detail=str(exc),
+            extra_meta={"providers": exc.providers, "role": exc.role or "premium"},
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("analyze-url analysis failed: %s", exc)

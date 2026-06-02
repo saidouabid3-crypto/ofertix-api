@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Any, Optional
 
 from core.locale_context import get_locale
@@ -21,11 +20,6 @@ class AIService:
     so the Flutter ``AISearchResponse`` contract is unchanged.
     """
 
-    # Groq has historically powered the fast conversational path. Prefer it when
-    # configured; otherwise fall back to the globally configured provider.
-    def _preferred_provider(self) -> Optional[str]:
-        return "groq" if os.getenv("GROQ_API_KEY") else None
-
     async def analyze_query(
         self,
         query: str,
@@ -39,10 +33,6 @@ class AIService:
         clean_query = query.strip()
         if not clean_query:
             return self._empty()
-
-        preferred = self._preferred_provider()
-        if not llm_transport.is_configured(preferred):
-            return self._technical_error(clean_query)
 
         locale = get_locale().merged_with(
             language=language,
@@ -76,14 +66,20 @@ class AIService:
                 user_content=user_content,
                 temperature=0.42,
                 max_tokens=1200,
-                preferred_provider=preferred,
+                provider_role="fast",
                 history=history or [],
             )
             parsed = json.loads(content)
             return self._normalize(parsed, clean_query)
-        except (LLMTransportError, json.JSONDecodeError, KeyError, ValueError) as exc:
-            logger.warning("AI search failed; technical fallback used: %s", exc)
-            return self._technical_error(clean_query)
+        except LLMTransportError:
+            raise
+        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+            logger.warning("AI search returned an invalid response: %s", exc)
+            raise LLMTransportError(
+                "AI search provider returned an invalid structured response.",
+                code="AI_INVALID_RESPONSE",
+                role="fast",
+            ) from exc
 
     # --- normalization (unchanged contract) ------------------------------
 
@@ -150,24 +146,6 @@ class AIService:
             "suggestions": [],
             "buyingTips": [],
             "needsProducts": False,
-            "products": [],
-        }
-
-    def _technical_error(self, query: str) -> dict[str, Any]:
-        return {
-            "answer": "",
-            "searchQuery": query,
-            "productQueries": [query],
-            "intent": "search",
-            "onlineOnly": False,
-            "localOnly": False,
-            "nearby": False,
-            "maxPrice": None,
-            "category": None,
-            "sortBy": "best",
-            "suggestions": [],
-            "buyingTips": [],
-            "needsProducts": True,
             "products": [],
         }
 

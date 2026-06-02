@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -10,6 +9,7 @@ from repositories.ai_brain_repository import ai_brain_repository
 from services.ai_service import ai_service
 from services.deal_score_service import DealScoreService
 from services.fake_discount_service import FakeDiscountService
+from services.llm_transport import llm_transport
 
 
 _REASONS: dict[str, dict[str, str]] = {
@@ -287,7 +287,7 @@ class AIBrainService:
         llm_text = await self._llm_summary(payload, base)
         if llm_text:
             base["summary"] = llm_text
-            base["model_used"] = os.getenv("GROQ_MODEL", "groq")
+            base["model_used"] = "rules_plus_llm"
         saved = await asyncio.to_thread(
             ai_brain_repository.save,
             user_id=current_user["uid"],
@@ -389,7 +389,7 @@ class AIBrainService:
         }
 
     async def _llm_summary(self, payload, base: dict) -> str:
-        if not os.getenv("GROQ_API_KEY"):
+        if not llm_transport.is_configured(provider_role="fast"):
             return ""
         locale = get_locale().merged_with(
             language=payload.language,
