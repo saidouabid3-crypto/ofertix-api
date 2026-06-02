@@ -144,6 +144,7 @@ ROUTER_MODULES: tuple[str, ...] = (
     "routes.setup",
     "routes.ai_deal_brain",
     "routes.local_engine",
+    "routes.jobs",
 )
 
 
