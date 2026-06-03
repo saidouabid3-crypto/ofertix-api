@@ -10,6 +10,7 @@ import httpx
 
 from core.firebase import db
 from core.image_validator import filter_valid_images
+from services.price_history_collector_service import price_history_collector_service
 from services.push_notification_service import push_notification_service
 from utils.product_standard import normalize_product
 
@@ -135,6 +136,16 @@ async def run_product_sync_batch() -> dict[str, int]:
             updated += 1
             if patch.get("isExpired"):
                 expired += 1
+            else:
+                # Record price snapshot — errors here never affect the sync count.
+                try:
+                    price_history_collector_service.record(
+                        product_id=doc.id,
+                        data={**data, **patch},
+                        reason="product_sync",
+                    )
+                except Exception as ph_exc:
+                    logger.debug("Price history skipped for %s: %s", doc.id, ph_exc)
         except Exception as exc:
             failed += 1
             logger.warning("Sync failed for %s: %s", doc.id, exc)

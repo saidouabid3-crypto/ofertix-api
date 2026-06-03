@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, status
 
@@ -62,4 +64,65 @@ async def check_price_alerts(
         return result
     except Exception as exc:
         logger.exception("Price alert check job failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+def _run_backfill(limit: int) -> dict[str, Any]:
+    """Synchronous backfill runner — called in a thread from the async handler."""
+    from core.firebase import db
+    from services.price_history_collector_service import price_history_collector_service
+
+    try:
+        docs = list(db.collection("products").limit(limit).stream())
+    except Exception as exc:
+        return {"error": str(exc), "checked": 0, "recorded": 0, "skipped": 0, "errors": 1}
+
+    checked = recorded = skipped = errors = 0
+    for doc in docs:
+        checked += 1
+        try:
+            result = price_history_collector_service.record(
+                product_id=doc.id,
+                data=doc.to_dict() or {},
+                reason="job_backfill",
+            )
+            if result["recorded"]:
+                recorded += 1
+            else:
+                skipped += 1
+        except Exception as exc:
+            errors += 1
+            logger.warning("Backfill error for %s: %s", doc.id, exc)
+
+    return {"checked": checked, "recorded": recorded, "skipped": skipped, "errors": errors}
+
+
+@router.post("/backfill-price-history")
+async def backfill_price_history(
+    limit: int = 200,
+    x_job_secret: str | None = Header(default=None, alias="X-Job-Secret"),
+) -> dict:
+    """
+    Backfill one price_history point per product with a valid price.
+
+    Safe to re-run — dedupe prevents duplicate writes for the same product/price/day.
+    Protected: requires X-Job-Secret header matching JOB_SECRET env var.
+
+    Query params:
+        limit: max products to process (default 200, max 1000)
+
+    Example:
+        curl -X POST https://your-api.onrender.com/api/jobs/backfill-price-history?limit=200 \\
+             -H "X-Job-Secret: your-secret"
+
+    Response: {checked, recorded, skipped, errors}
+    """
+    _verify_secret(x_job_secret)
+    safe_limit = max(1, min(limit, 1000))
+    logger.info("Backfill price history triggered via API (limit=%d)", safe_limit)
+    try:
+        result = await asyncio.to_thread(_run_backfill, safe_limit)
+        return result
+    except Exception as exc:
+        logger.exception("Backfill price history job failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
