@@ -2,11 +2,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
 
 from core.firebase import db
 
 logger = logging.getLogger("ofertix.push")
+
+_SUPPORTED_LANGS = {"en", "es", "ar", "fr"}
+
+_TITLE: dict[str, str] = {
+    "en": "Price drop alert",
+    "es": "Alerta de bajada de precio",
+    "ar": "تنبيه انخفاض السعر",
+    "fr": "Alerte baisse de prix",
+}
+
+_BODY: dict[str, str] = {
+    "en": "{name} dropped to {new:.2f} {currency}",
+    "es": "{name} bajó a {new:.2f} {currency}",
+    "ar": "انخفض سعر {name} إلى {new:.2f} {currency}",
+    "fr": "{name} est passé à {new:.2f} {currency}",
+}
 
 
 class PushNotificationService:
@@ -19,42 +34,47 @@ class PushNotificationService:
         new_price: float,
         currency: str,
     ) -> int:
-        """Notify users who favorited or watchlisted this product."""
+        try:
+            user_ids = await asyncio.to_thread(self._collect_interested_users, product_id)
+        except Exception as exc:
+            logger.warning("notify_price_drop: failed to collect users: %s", exc)
+            return 0
 
-        user_ids = await asyncio.to_thread(self._collect_interested_users, product_id)
         if not user_ids:
             return 0
 
-        title = "Price drop alert"
-        body = f"{product_name}: {old_price:.2f} → {new_price:.2f} {currency}"
-
         sent = 0
         for uid in user_ids:
-            tokens = await asyncio.to_thread(self._tokens_for_user, uid)
+            try:
+                profile = await asyncio.to_thread(self._user_profile, uid)
+            except Exception as exc:
+                logger.debug("notify_price_drop: could not read profile: %s", exc)
+                continue
+
+            lang = profile["language"]
+            tokens = profile["tokens"]
+            if not tokens:
+                continue
+
+            title = _TITLE.get(lang, _TITLE["en"])
+            body = _BODY.get(lang, _BODY["en"]).format(
+                name=product_name,
+                new=new_price,
+                currency=currency,
+            )
+            data = {
+                "type": "price_drop",
+                "productId": product_id,
+                "oldPrice": str(old_price),
+                "newPrice": str(new_price),
+                "currency": currency,
+            }
+
             for token in tokens:
-                ok = await asyncio.to_thread(
-                    self._send_fcm,
-                    token,
-                    title,
-                    body,
-                    {
-                        "type": "price_drop",
-                        "productId": product_id,
-                        "oldPrice": str(old_price),
-                        "newPrice": str(new_price),
-                        "currency": currency,
-                    },
-                )
+                ok = await asyncio.to_thread(self._send_fcm, token, title, body, data)
                 if ok:
                     sent += 1
 
-        await asyncio.to_thread(
-            self._store_notification_records,
-            user_ids,
-            product_id,
-            title,
-            body,
-        )
         return sent
 
     def _collect_interested_users(self, product_id: str) -> set[str]:
@@ -65,32 +85,48 @@ class PushNotificationService:
             ("price_alerts", "productId"),
         ):
             try:
-                docs = db.collection(collection).where(field, "==", product_id).limit(200).stream()
+                docs = (
+                    db.collection(collection)
+                    .where(field, "==", product_id)
+                    .limit(200)
+                    .stream()
+                )
                 for doc in docs:
-                    data = doc.to_dict() or {}
-                    uid = data.get("userId") or data.get("uid")
+                    d = doc.to_dict() or {}
+                    uid = d.get("userId") or d.get("uid")
                     if uid:
                         users.add(str(uid))
             except Exception:
                 continue
         return users
 
-    def _tokens_for_user(self, uid: str) -> list[str]:
+    def _user_profile(self, uid: str) -> dict:
         tokens: list[str] = []
+        language = "en"
         try:
             doc = db.collection("users").document(uid).get()
             if not doc.exists:
-                return tokens
+                return {"tokens": tokens, "language": language}
             data = doc.to_dict() or {}
-            single = data.get("fcmToken") or data.get("deviceToken")
-            if single:
-                tokens.append(str(single))
+
+            raw_lang = (
+                data.get("language")
+                or data.get("preferredLanguage")
+                or data.get("locale")
+                or "en"
+            )
+            code = str(raw_lang).strip().lower()[:2]
+            language = code if code in _SUPPORTED_LANGS else "en"
+
+            single = data.get("fcmToken")
+            if single and isinstance(single, str) and single.strip():
+                tokens.append(single.strip())
             for entry in data.get("fcmTokens") or []:
-                if entry:
-                    tokens.append(str(entry))
-        except Exception:
-            return []
-        return list(dict.fromkeys(tokens))
+                if entry and isinstance(entry, str) and entry.strip():
+                    tokens.append(entry.strip())
+        except Exception as exc:
+            logger.debug("Could not read user profile: %s", exc)
+        return {"tokens": list(dict.fromkeys(tokens)), "language": language}
 
     def _send_fcm(self, token: str, title: str, body: str, data: dict[str, str]) -> bool:
         try:
@@ -104,32 +140,8 @@ class PushNotificationService:
             messaging.send(message)
             return True
         except Exception as exc:
-            logger.debug("FCM send skipped/failed: %s", exc)
+            logger.debug("FCM send failed: %s", type(exc).__name__)
             return False
-
-    def _store_notification_records(
-        self,
-        user_ids: set[str],
-        product_id: str,
-        title: str,
-        body: str,
-    ) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        for uid in user_ids:
-            try:
-                db.collection("notifications").add(
-                    {
-                        "userId": uid,
-                        "productId": product_id,
-                        "title": title,
-                        "body": body,
-                        "type": "price_drop",
-                        "read": False,
-                        "createdAt": now,
-                    }
-                )
-            except Exception:
-                continue
 
 
 push_notification_service = PushNotificationService()
