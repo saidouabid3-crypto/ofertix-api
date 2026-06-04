@@ -123,6 +123,7 @@ async def health() -> dict[str, object]:
 
 ROUTER_MODULES: tuple[str, ...] = (
     "routes.products",
+    "routes.events",
     "routes.scan",
     "routes.ai_search",
     "routes.home_feed",

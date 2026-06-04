@@ -1,4 +1,4 @@
-"""
+r"""
 Import affiliate banner ads from a CSV exported by your affiliate network into Firestore.
 
 Usage from backend root:

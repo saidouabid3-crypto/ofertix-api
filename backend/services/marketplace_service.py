@@ -13,7 +13,10 @@ class MarketplaceService:
         filtered = [normalize_item_market_fields(i, market) for i in items if item_available_for_country(i, market)]
         return filtered[:limit]
 
-    def create_item(self, payload: Dict[str, Any]):
+    def create_item(self, payload: Dict[str, Any], current_user: dict):
+        user_id = str(current_user.get('uid') or '').strip()
+        if not user_id:
+            raise ValueError('Authenticated user is required')
         market = normalize_market(payload.get('sellerCountryCode') or payload.get('country') or 'es')
         payload['sellerCountryCode'] = market
         payload['country'] = market
@@ -22,15 +25,40 @@ class MarketplaceService:
         payload.setdefault('availableCountries', [market])
         payload.setdefault('shipsTo', [] if payload.get('pickupOnly', True) else [market])
         payload.setdefault('pickupOnly', True)
+        payload['sellerId'] = user_id
+        payload['userId'] = user_id
+        payload['ownerId'] = user_id
+        payload['creatorId'] = user_id
         return self.repo.create_item(payload)
 
     def get_item(self, item_id: str):
         return self.repo.get_item(item_id)
-    def update_item(self, item_id: str, payload: Dict[str, Any]):
+
+    def _assert_owner(self, item_id: str, current_user: dict) -> None:
+        item = self.repo.get_item(item_id)
+        if not item:
+            return
+        user_id = str(current_user.get('uid') or '').strip()
+        owners = {
+            str(item.get(key) or '').strip()
+            for key in ('ownerId', 'userId', 'sellerId', 'creatorId')
+        }
+        owners.discard('')
+        if owners and user_id not in owners:
+            raise PermissionError('You can only modify your own marketplace items')
+
+    def update_item(self, item_id: str, payload: Dict[str, Any], current_user: dict):
+        self._assert_owner(item_id, current_user)
+        for protected_key in ('ownerId', 'userId', 'sellerId', 'creatorId'):
+            payload.pop(protected_key, None)
         return self.repo.update_item(item_id, payload)
-    def delete_item(self, item_id: str):
+
+    def delete_item(self, item_id: str, current_user: dict):
+        self._assert_owner(item_id, current_user)
         return self.repo.delete_item(item_id)
+
     def favorite_item(self, item_id: str, user_id: str):
         return self.repo.favorite_item(item_id, user_id)
+
     def report_item(self, item_id: str, user_id: str, reason: str):
         return self.repo.report_item(item_id, user_id, reason)

@@ -111,6 +111,54 @@ async def get_products(
     }
 
 
+@router.get("/product-detail/{product_id}")
+async def get_product_detail(product_id: str, country: str = "es"):
+    market = normalize_market(country)
+
+    try:
+        doc = await asyncio.to_thread(db.collection("products").document(product_id).get)
+        if doc.exists:
+            raw = {"id": doc.id, **(doc.to_dict() or {})}
+            item = normalize_product(
+                normalize_item_market_fields(raw, fallback_country=market),
+                fallback_country=market,
+            )
+            if _usable(item, market):
+                return {
+                    "ok": True,
+                    "country": market,
+                    "currency": SUPPORTED_MARKETS[market]["currency"],
+                    "product": item,
+                    "sections": {},
+                    "aiVerdict": {},
+                    "dealDNA": {},
+                }
+    except Exception:
+        pass
+
+    raw_docs = await asyncio.to_thread(_stream_products, 800)
+    for raw in raw_docs:
+        if str(raw.get("id") or "") != product_id:
+            continue
+        item = normalize_product(
+            normalize_item_market_fields(raw, fallback_country=market),
+            fallback_country=market,
+        )
+        if not _usable(item, market):
+            break
+        return {
+            "ok": True,
+            "country": market,
+            "currency": SUPPORTED_MARKETS[market]["currency"],
+            "product": item,
+            "sections": {},
+            "aiVerdict": {},
+            "dealDNA": {},
+        }
+
+    return {"ok": False, "error": "Product not found", "productId": product_id}
+
+
 @router.post("/api/products/search")
 async def search_products(payload: ProductSearchRequest):
     market = normalize_market(payload.country)

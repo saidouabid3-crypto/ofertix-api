@@ -15,6 +15,12 @@ router = APIRouter(prefix="/api/jobs", tags=["Jobs"])
 
 _JOB_SECRET_ENV = "JOB_SECRET"
 
+# Render Cron setup:
+# - Env var required on Render: JOB_SECRET=<strong-random-secret>
+# - Method/URL: POST https://ofertix-api.onrender.com/api/jobs/check-price-alerts
+# - Header: X-Job-Secret: <JOB_SECRET>
+# - Recommended schedule before launch: every 6 hours.
+
 
 def _verify_secret(provided: str | None) -> None:
     """Reject the request if JOB_SECRET is not configured or does not match."""

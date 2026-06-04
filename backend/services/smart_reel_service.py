@@ -5,6 +5,9 @@ from services.deal_score_service import DealScoreService
 from services.fake_discount_service import FakeDiscountService
 
 
+MODERATION_STATUSES = {'pending', 'approved', 'rejected'}
+
+
 class SmartReelService:
     def _resolve_user_profile(self, current_user: dict | None) -> dict:
         if not current_user:
@@ -66,6 +69,9 @@ class SmartReelService:
             'deal_score': deal_score,
             'ai_verdict': DealScoreService.ai_verdict(deal_score),
             'fake_discount_risk': fake_risk,
+            # Uploads remain auto-approved until Batch 10 adds the moderation UI.
+            # Feed code already filters for approved reels; pending/rejected are
+            # reserved for the next moderation pass.
             'status': 'approved',
             'provider': 'cloudinary',
         }

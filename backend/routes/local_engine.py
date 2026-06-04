@@ -9,7 +9,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from core.auth import optional_user, require_admin
+from core.auth import optional_user, require_admin, require_user
 
 router = APIRouter(tags=["ofertix-local"])
 
@@ -332,6 +332,13 @@ def _uid_from_user(current_user: dict | None) -> str:
     return "anonymous"
 
 
+def _required_uid(current_user: dict) -> str:
+    uid = str(current_user.get("uid") or "").strip()
+    if not uid:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return uid
+
+
 # ---------------------------------------------------------------------------
 # Public store endpoints
 # ---------------------------------------------------------------------------
@@ -425,9 +432,9 @@ async def merchant_stores(current_user: dict | None = Depends(optional_user)):
 @router.post("/api/merchant/stores")
 async def create_merchant_store(
     payload: LocalStorePayload,
-    current_user: dict | None = Depends(optional_user),
+    current_user: dict = Depends(require_user),
 ):
-    merchant = _uid_from_user(current_user)
+    merchant = _required_uid(current_user)
     store = await asyncio.to_thread(repo.save_store, payload, merchant)
     return {"store": store}
 
@@ -442,10 +449,10 @@ async def merchant_offers(current_user: dict | None = Depends(optional_user)):
 @router.post("/api/merchant/offers")
 async def create_merchant_offer(
     payload: LocalOfferPayload,
-    current_user: dict | None = Depends(optional_user),
+    current_user: dict = Depends(require_user),
 ):
     payload.status = "pending"
-    merchant = _uid_from_user(current_user)
+    merchant = _required_uid(current_user)
     offer = await asyncio.to_thread(repo.save_offer, payload, merchant)
     return {"offer": offer}
 

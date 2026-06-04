@@ -91,6 +91,45 @@ async def ai_card_verdict(
     return await _run_pro_max(payload, "card_verdict", "fast")
 
 
+@router.post("/recommendations")
+async def ai_recommendations(
+    payload: dict,
+    _quota: dict = Depends(enforce_ai_rate_limit),
+):
+    query = str(payload.get("query") or "").strip()
+    if not query:
+        return {"products": []}
+
+    try:
+        result = await unified_ai_service.ai_search(
+            query=query,
+            country_code=str(payload.get("countryCode") or payload.get("country") or "global"),
+            currency=str(payload.get("currency") or "EUR"),
+            language=str(payload.get("language") or "auto"),
+            latitude=payload.get("latitude"),
+            longitude=payload.get("longitude"),
+            history=[],
+        )
+        return {"products": result.get("products") or []}
+    except LLMTransportError as exc:
+        logger.warning("ai_recommendations provider error: %s", exc)
+        return localized_error_response(
+            status_code=503,
+            code=exc.code,
+            message_id="ai_unavailable",
+            detail=str(exc),
+            extra_meta={"providers": exc.providers, "role": exc.role or "fast"},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("ai_recommendations failed: %s", exc)
+        return localized_error_response(
+            status_code=503,
+            code="AI_RECOMMENDATIONS_FAILED",
+            message_id="ai_unavailable",
+            detail=str(exc),
+        )
+
+
 @router.post("/search", response_model=AISearchResponse)
 async def ai_search(
     payload: AISearchRequest,
