@@ -3,11 +3,19 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, Query
+from pydantic import BaseModel
 
 from core.firebase import db
 from core.market_config import normalize_market, SUPPORTED_MARKETS
 from utils.market_filter import item_available_for_country, normalize_item_market_fields
 from utils.product_standard import normalize_product
+
+
+class ProductSearchRequest(BaseModel):
+    query: str = ""
+    country: str = "es"
+    category: str | None = None
+    limit: int = 30
 
 router = APIRouter()
 
@@ -99,5 +107,52 @@ async def get_products(
         "limit": limit,
         "count": len(results),
         "hasMore": len(results) == limit,
+        "products": results,
+    }
+
+
+@router.post("/api/products/search")
+async def search_products(payload: ProductSearchRequest):
+    market = normalize_market(payload.country)
+    q = payload.query.strip().lower()
+    wanted_category = (payload.category or "").strip().lower()
+    limit = max(1, min(payload.limit, 200))
+    read_limit = min(limit * 8, 800)
+
+    raw_docs = await asyncio.to_thread(_stream_products, read_limit)
+
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    for raw in raw_docs:
+        item = normalize_product(
+            normalize_item_market_fields(raw, fallback_country=market),
+            fallback_country=market,
+        )
+        if not _usable(item, market):
+            continue
+        if wanted_category and wanted_category not in str(
+            item.get("categoryGroup") or item.get("category") or ""
+        ).lower():
+            continue
+        if q:
+            haystack = " ".join(
+                str(item.get(k) or "")
+                for k in ("name", "fullTitle", "description", "category", "store")
+            ).lower()
+            if q not in haystack:
+                continue
+        fp = item.get("fingerprint") or f"{item.get('store')}|{item.get('name')}|{item.get('newPrice')}"
+        if fp in seen:
+            continue
+        seen.add(fp)
+        results.append(item)
+        if len(results) >= limit:
+            break
+
+    return {
+        "country": market,
+        "currency": SUPPORTED_MARKETS[market]["currency"],
+        "count": len(results),
         "products": results,
     }
