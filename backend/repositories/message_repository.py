@@ -35,7 +35,7 @@ class MessageRepository:
                 'participants': [sender_id, receiver_id],
                 'participant_names': {
                     sender_id: sender_profile['name'],
-                    receiver_id: payload.receiver_name or 'Ofertix User',
+                    receiver_id: payload.receiver_name or 'User',
                 },
                 'participant_photos': {
                     sender_id: sender_profile['photo_url'],
@@ -95,7 +95,7 @@ class MessageRepository:
             'id': message_id,
             'conversation_id': conversation_id,
             'sender_id': sender_id,
-            'sender_name': sender_name or 'Ofertix User',
+            'sender_name': sender_name or 'User',
             'text': text.strip(),
             'type': 'text',
             'reel_id': reel_id or conversation.get('reel_id') or '',
@@ -215,7 +215,7 @@ class MessageRepository:
             or data.get('displayName')
             or fallback.get('name')
             or fallback.get('email', '').split('@')[0]
-            or 'Ofertix User'
+            or 'User'
         )
 
         photo = data.get('photo_url') or data.get('photoUrl') or fallback.get('picture') or ''
@@ -238,7 +238,7 @@ class MessageRepository:
     def _normalize_message(self, data: dict) -> dict:
         data['conversation_id'] = str(data.get('conversation_id') or '')
         data['sender_id'] = str(data.get('sender_id') or '')
-        data['sender_name'] = str(data.get('sender_name') or 'Ofertix User')
+        data['sender_name'] = str(data.get('sender_name') or 'User')
         data['text'] = str(data.get('text') or '')
         data['type'] = str(data.get('type') or 'text')
         data['reel_id'] = str(data.get('reel_id') or '')

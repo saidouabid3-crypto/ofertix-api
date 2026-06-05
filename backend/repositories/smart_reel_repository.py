@@ -107,7 +107,7 @@ class SmartReelRepository:
         return True
 
 
-    def create_message(self, reel_id: str, sender_id: str = 'mobile_user', sender_name: str = 'Ofertix User', text: str = '') -> Optional[dict]:
+    def create_message(self, reel_id: str, sender_id: str = 'mobile_user', sender_name: str = 'User', text: str = '') -> Optional[dict]:
         reel_ref = self.collection.document(reel_id)
         reel_doc = reel_ref.get()
         if not reel_doc.exists:
@@ -121,7 +121,7 @@ class SmartReelRepository:
             'reel_id': reel_id,
             'creator_id': str(reel.get('creator_id') or 'mobile_user'),
             'sender_id': sender_id or 'mobile_user',
-            'sender_name': sender_name or 'Ofertix User',
+            'sender_name': sender_name or 'User',
             'text': text.strip(),
             'created_at': now,
             'status': 'unread',
@@ -184,14 +184,31 @@ class SmartReelRepository:
         data['id'] = data.get('id') or reel_id
         return self._normalize_reel(data)
 
-    def add_comment(self, reel_id: str, text: str, user_id: str = 'mobile_user', user_name: str = 'Ofertix User') -> Optional[dict]:
+    def add_comment(
+        self,
+        reel_id: str,
+        text: str,
+        user_id: str = 'mobile_user',
+        user_name: str = 'Creator',
+        user_avatar_url: str = '',
+        username: str = '',
+    ) -> Optional[dict]:
         reel_ref = self.collection.document(reel_id)
         reel_doc = reel_ref.get()
         if not reel_doc.exists:
             return None
         now = datetime.utcnow().isoformat()
         comment_id = f'comment_{uuid4().hex[:12]}'
-        comment = {'id': comment_id, 'reel_id': reel_id, 'user_id': user_id or 'mobile_user', 'user_name': user_name or 'Ofertix User', 'text': text.strip(), 'created_at': now}
+        comment = {
+            'id': comment_id,
+            'reel_id': reel_id,
+            'user_id': user_id or 'mobile_user',
+            'user_name': user_name or 'Creator',
+            'user_avatar_url': user_avatar_url or '',
+            'username': username or '',
+            'text': text.strip(),
+            'created_at': now,
+        }
         self.comments_collection.document(comment_id).set(comment)
         reel_data = reel_doc.to_dict() or {}
         reel_ref.update({'comments': int(reel_data.get('comments', 0)) + 1, 'updated_at': now})
@@ -351,7 +368,7 @@ class SmartReelRepository:
         reel['product_id'] = reel.get('product_id') or None
         reel['description'] = reel.get('description') or ''
         reel['creator_id'] = str(reel.get('creator_id') or 'mobile_user')
-        reel['creator_name'] = str(reel.get('creator_name') or 'Ofertix User')
+        reel['creator_name'] = str(reel.get('creator_name') or 'Creator')
         reel['creator_avatar_url'] = str(reel.get('creator_avatar_url') or '')
         reel['thumbnail_url'] = str(reel.get('thumbnail_url') or '')
         reel['video_mp4_url'] = str(reel.get('video_mp4_url') or '')

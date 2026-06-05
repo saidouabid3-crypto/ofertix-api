@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 class StartConversationRequest(BaseModel):
     receiver_id: str = Field(..., min_length=1, max_length=120)
-    receiver_name: str = Field(default='Ofertix User', max_length=100)
+    receiver_name: str = Field(default='User', max_length=100)
     receiver_photo_url: str = Field(default='', max_length=700)
     text: str = Field(..., min_length=1, max_length=1000)
     reel_id: str = Field(default='', max_length=120)

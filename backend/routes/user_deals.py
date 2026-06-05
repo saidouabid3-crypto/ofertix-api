@@ -19,7 +19,7 @@ async def list_user_deals(
 
 @router.post('', response_model=UserDealOut)
 async def create_user_deal(payload: UserDealCreate, current_user: dict = Depends(require_user)):
-    name = current_user.get('name') or current_user.get('email', '').split('@')[0] or 'Ofertix User'
+    name = current_user.get('name') or current_user.get('email', '').split('@')[0] or 'User'
     secured = payload.model_copy(update={'creator_id': current_user['uid'], 'creator_name': name})
     return user_deal_service.create(secured)
 

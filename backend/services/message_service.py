@@ -19,7 +19,7 @@ class MessageService:
 
     def send_message(self, conversation_id: str, payload, current_user: dict):
         sender_id = current_user['uid']
-        sender_name = current_user.get('name') or current_user.get('email', '').split('@')[0] or 'Ofertix User'
+        sender_name = current_user.get('name') or current_user.get('email', '').split('@')[0] or 'User'
 
         return message_repository.add_message(
             conversation_id=conversation_id,

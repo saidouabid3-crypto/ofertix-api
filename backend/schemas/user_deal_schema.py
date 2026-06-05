@@ -17,7 +17,7 @@ class UserDealCreate(BaseModel):
     longitude: Optional[float] = None
     media_url: str = Field(default='', max_length=700)
     creator_id: str = Field(default='mobile_user', max_length=120)
-    creator_name: str = Field(default='Ofertix User', max_length=100)
+    creator_name: str = Field(default='User', max_length=100)
 
     @field_validator('title', 'store', 'currency', 'country')
     @classmethod
@@ -40,7 +40,7 @@ class UserDealOut(BaseModel):
     longitude: Optional[float] = None
     media_url: str = ''
     creator_id: str = 'mobile_user'
-    creator_name: str = 'Ofertix User'
+    creator_name: str = 'User'
     status: str = 'pending'
     ai_status: str = 'not_checked'
     reward_points: int = 0

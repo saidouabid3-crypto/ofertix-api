@@ -15,7 +15,7 @@ class SmartReelCreate(BaseModel):
     affiliate_url: Optional[HttpUrl] = None
     product_id: Optional[str] = Field(default=None, max_length=80)
     creator_id: str = Field(default='mobile_user', max_length=120)
-    creator_name: str = Field(default='Ofertix User', max_length=80)
+    creator_name: str = Field(default='Creator', max_length=80)
     creator_avatar_url: Optional[str] = Field(default='', max_length=700)
 
     @field_validator('title', 'store')
@@ -93,7 +93,7 @@ class SmartReelOut(BaseModel):
     description: Optional[str] = ''
     store: str
     creator_id: str = 'mobile_user'
-    creator_name: str = 'Ofertix User'
+    creator_name: str = 'Creator'
     creator_avatar_url: str = ''
     current_price: float
     old_price: Optional[float] = None
@@ -145,5 +145,7 @@ class SmartReelCommentOut(BaseModel):
     reel_id: str
     user_id: str
     user_name: str
+    user_avatar_url: str = ''
+    username: str = ''
     text: str
     created_at: datetime

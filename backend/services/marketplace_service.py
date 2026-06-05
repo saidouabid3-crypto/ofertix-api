@@ -1,5 +1,6 @@
 from typing import Any, Dict, Optional
 from repositories.marketplace_repository import MarketplaceRepository
+from repositories.profile_repository import profile_repository
 from core.market_config import normalize_market, SUPPORTED_MARKETS
 from utils.market_filter import item_available_for_country, normalize_item_market_fields
 
@@ -29,6 +30,11 @@ class MarketplaceService:
         payload['userId'] = user_id
         payload['ownerId'] = user_id
         payload['creatorId'] = user_id
+        profile = profile_repository.get_profile(user_id) or {}
+        payload['sellerName'] = payload.get('sellerName') or profile.get('display_name') or ''
+        payload['sellerUsername'] = payload.get('sellerUsername') or profile.get('username') or ''
+        payload['sellerAvatarUrl'] = payload.get('sellerAvatarUrl') or profile.get('avatar_url') or profile.get('photo_url') or ''
+        payload['sellerVerified'] = bool(payload.get('sellerVerified') or profile.get('seller_verified') or profile.get('is_verified'))
         return self.repo.create_item(payload)
 
     def get_item(self, item_id: str):

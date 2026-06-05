@@ -13,13 +13,15 @@ class SmartReelService:
         if not current_user:
             return {
                 'uid': 'mobile_user',
-                'name': 'Ofertix User',
+                'name': 'Creator',
                 'photo_url': '',
+                'username': '',
             }
 
         uid = current_user.get('uid') or ''
-        name = current_user.get('name') or current_user.get('email', '').split('@')[0] or 'Ofertix User'
+        name = current_user.get('name') or current_user.get('email', '').split('@')[0] or 'Creator'
         photo_url = current_user.get('picture') or ''
+        username = ''
 
         if uid:
             snap = db.collection('users').document(uid).get()
@@ -27,11 +29,13 @@ class SmartReelService:
                 data = snap.to_dict() or {}
                 name = data.get('display_name') or data.get('displayName') or name
                 photo_url = data.get('photo_url') or data.get('photoUrl') or photo_url
+                username = data.get('username') or data.get('username_lower') or ''
 
         return {
             'uid': uid or 'mobile_user',
-            'name': str(name or 'Ofertix User'),
+            'name': str(name or 'Creator'),
             'photo_url': str(photo_url or ''),
+            'username': str(username or ''),
         }
 
     def create_reel(self, payload, current_user: dict | None = None):
@@ -186,6 +190,8 @@ class SmartReelService:
             text=text,
             user_id=user_profile['uid'],
             user_name=user_profile['name'],
+            user_avatar_url=user_profile['photo_url'],
+            username=user_profile['username'],
         )
 
     def get_comments(self, reel_id: str, limit: int = 50):
