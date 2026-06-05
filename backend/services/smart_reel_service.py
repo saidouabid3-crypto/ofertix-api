@@ -169,8 +169,15 @@ class SmartReelService:
             return {'is_saved': False, 'saves': 0}
         return {'is_saved': False, 'saves': result.get('saves', 0)}
 
-    def report(self, reel_id: str):
-        return smart_reel_repository.increment(reel_id, 'reports')
+    def report(self, reel_id: str, viewer_id: str | None = None) -> dict:
+        """Report a reel. Requires viewer_id (from verified token). Dedupes per user."""
+        if viewer_id:
+            return smart_reel_repository.report_once(reel_id, viewer_id)
+        # Fallback — should not reach here once routes enforce require_user.
+        result = smart_reel_repository.increment(reel_id, 'reports')
+        if not result:
+            return {'reports': 0}
+        return {'reports': result.get('reports', 0)}
 
     def add_comment(self, reel_id: str, text: str, current_user: dict):
         user_profile = self._resolve_user_profile(current_user)

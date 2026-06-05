@@ -2,7 +2,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
-from core.auth import optional_user, require_user
+from core.auth import require_user
 from schemas.smart_reel_schema import (
     SmartReelCommentCreate,
     SmartReelCommentOut,
@@ -116,10 +116,9 @@ async def track_view(reel_id: str):
 @router.post('/{reel_id}/like')
 async def like_reel(
     reel_id: str,
-    current_user: dict | None = Depends(optional_user),
+    current_user: dict = Depends(require_user),
 ):
-    viewer_id = current_user['uid'] if current_user else None
-    result = smart_reel_service.like(reel_id, viewer_id=viewer_id)
+    result = smart_reel_service.like(reel_id, viewer_id=current_user['uid'])
     if result is None:
         raise HTTPException(status_code=404, detail='Smart reel not found')
     return {'ok': True, 'is_liked': result.get('is_liked', False), 'likes': result.get('likes', 0)}
@@ -138,10 +137,9 @@ async def click_reel(reel_id: str):
 @router.post('/{reel_id}/save')
 async def save_reel(
     reel_id: str,
-    current_user: dict | None = Depends(optional_user),
+    current_user: dict = Depends(require_user),
 ):
-    viewer_id = current_user['uid'] if current_user else None
-    result = smart_reel_service.save(reel_id, viewer_id=viewer_id)
+    result = smart_reel_service.save(reel_id, viewer_id=current_user['uid'])
     if result is None:
         raise HTTPException(status_code=404, detail='Smart reel not found')
     return {'ok': True, 'is_saved': result.get('is_saved', False), 'saves': result.get('saves', 0)}
@@ -150,13 +148,10 @@ async def save_reel(
 @router.post('/{reel_id}/report')
 async def report_reel(
     reel_id: str,
-    current_user: dict | None = Depends(optional_user),
+    current_user: dict = Depends(require_user),
 ):
-    # Anonymous reports are allowed but per-user dedup can be added in Batch 12.
-    reel = smart_reel_service.report(reel_id)
-    if not reel:
-        raise HTTPException(status_code=404, detail='Smart reel not found')
-    return {'ok': True, 'reports': reel['reports']}
+    result = smart_reel_service.report(reel_id, viewer_id=current_user['uid'])
+    return {'ok': True, 'reports': result.get('reports', 0), 'already_reported': result.get('already_reported', False)}
 
 
 @router.post('/{reel_id}/message', response_model=SmartReelMessageOut)

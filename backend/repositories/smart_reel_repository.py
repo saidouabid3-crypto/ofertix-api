@@ -12,6 +12,7 @@ class SmartReelRepository:
     MESSAGES_COLLECTION = 'smart_reel_messages'
     LIKES_COLLECTION = 'reel_likes'
     SAVES_COLLECTION = 'reel_saves'
+    REPORTS_COLLECTION = 'reel_reports'
 
     def __init__(self):
         self.collection = db.collection(self.COLLECTION)
@@ -20,6 +21,7 @@ class SmartReelRepository:
         self.messages_collection = db.collection(self.MESSAGES_COLLECTION)
         self.likes_collection = db.collection(self.LIKES_COLLECTION)
         self.saves_collection = db.collection(self.SAVES_COLLECTION)
+        self.reports_collection = db.collection(self.REPORTS_COLLECTION)
 
     def create(self, data: dict) -> dict:
         now = datetime.utcnow().isoformat()
@@ -231,6 +233,41 @@ class SmartReelRepository:
         snap = user_ref.get()
         current = int((snap.to_dict() or {}).get(field, 0)) if snap.exists else 0
         user_ref.set({field: max(0, current + amount), 'updated_at': datetime.utcnow().isoformat()}, merge=True)
+
+    def report_once(self, reel_id: str, viewer_id: str) -> dict:
+        """Create one report per authenticated user per reel. Idempotent.
+        Returns {already_reported, reports}."""
+        viewer_id = (viewer_id or '').strip()
+        if not viewer_id or viewer_id == 'mobile_user':
+            return {'already_reported': False, 'reports': 0}
+
+        reel_doc = self.collection.document(reel_id).get()
+        if not reel_doc.exists:
+            return {'already_reported': False, 'reports': 0}
+
+        report_id = f'{viewer_id}_{reel_id}'
+        report_ref = self.reports_collection.document(report_id)
+        now = datetime.utcnow().isoformat()
+
+        if report_ref.get().exists:
+            reel_data = reel_doc.to_dict() or {}
+            return {
+                'already_reported': True,
+                'reports': int(reel_data.get('reports', 0)),
+            }
+
+        report_ref.set({
+            'reel_id': reel_id,
+            'viewer_id': viewer_id,
+            'created_at': now,
+        })
+        reel_data = reel_doc.to_dict() or {}
+        new_reports = int(reel_data.get('reports', 0)) + 1
+        self.collection.document(reel_id).update({
+            'reports': new_reports,
+            'updated_at': now,
+        })
+        return {'already_reported': False, 'reports': new_reports}
 
     def toggle_like(self, reel_id: str, viewer_id: str) -> dict:
         """Toggle like for authenticated viewer. Returns {is_liked, likes}."""
