@@ -1,6 +1,6 @@
 ﻿from fastapi import APIRouter, Depends, HTTPException, Query
 
-from core.auth import require_active_user, require_user
+from core.auth import require_active_user, require_admin, require_user
 from schemas.user_deal_schema import UserDealCreate, UserDealListResponse, UserDealOut
 from services.user_deal_service import user_deal_service
 
@@ -28,7 +28,7 @@ async def create_user_deal(payload: UserDealCreate, current_user: dict = Depends
 async def moderate_user_deal(
     deal_id: str,
     status: str = Query(..., pattern='^(pending|approved|rejected)$'),
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_admin),
 ):
     item = user_deal_service.moderate(deal_id=deal_id, status=status)
     if not item:
