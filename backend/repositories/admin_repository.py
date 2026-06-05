@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from core.firebase import db
 from utils.country_intelligence import GLOBAL_CODES, enrich_country_fields, normalize_country
@@ -22,6 +23,8 @@ COUNTRY_ALIASES = {
     'mercado libre mx': 'mx', 'mercadolibre mx': 'mx',
 }
 
+_REPORT_COLLECTIONS = ['reel_reports', 'item_reports', 'marketplace_reports', 'product_reports']
+
 
 def _safe_aggregate_count(collection: str, fallback_limit: int = 2000) -> int:
     try:
@@ -39,6 +42,15 @@ def _safe_aggregate_count(collection: str, fallback_limit: int = 2000) -> int:
 
     try:
         return sum(1 for _ in db.collection(collection).limit(fallback_limit).stream())
+    except Exception:
+        return 0
+
+
+def _safe_count_where(collection: str, field: str, value: Any, limit: int = 2000) -> int:
+    try:
+        return sum(
+            1 for _ in db.collection(collection).where(field, '==', value).limit(limit).stream()
+        )
     except Exception:
         return 0
 
@@ -121,7 +133,21 @@ def _to_float(value: Any) -> float:
         return 0.0
 
 
+def _ts(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if hasattr(value, 'isoformat'):
+        return value.isoformat()
+    return str(value)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 class AdminRepository:
+    # ─────────────────────── original dashboard ──────────────────────────────
+
     def dashboard(self) -> Dict[str, Any]:
         total_users = _safe_aggregate_count('users')
         total_products = _safe_aggregate_count('products')
@@ -179,7 +205,7 @@ class AdminRepository:
                         'uid': data.get('uid'),
                         'count': data.get('count'),
                         'blocked': data.get('blocked') is True,
-                        'createdAt': data.get('createdAt'),
+                        'createdAt': _ts(data.get('createdAt')),
                     }
                 )
         except Exception:
@@ -198,7 +224,7 @@ class AdminRepository:
                         'url': data.get('url'),
                         'source': data.get('source'),
                         'error': data.get('error'),
-                        'createdAt': data.get('createdAt'),
+                        'createdAt': _ts(data.get('createdAt')),
                     }
                 )
         except Exception:
@@ -212,7 +238,7 @@ class AdminRepository:
                                 'url': data.get('source') or doc.id,
                                 'source': data.get('source') or doc.id,
                                 'error': data.get('lastError') or data.get('lastStatus'),
-                                'createdAt': data.get('lastSyncAt'),
+                                'createdAt': _ts(data.get('lastSyncAt')),
                             }
                         )
             except Exception:
@@ -251,7 +277,7 @@ class AdminRepository:
                         'storeId': data.get('storeId'),
                         'merchantId': data.get('merchantId'),
                         'countryCode': data.get('countryCode'),
-                        'createdAt': data.get('createdAt'),
+                        'createdAt': _ts(data.get('createdAt')),
                     }
                 )
         except Exception:
@@ -269,7 +295,7 @@ class AdminRepository:
                         'id': doc.id,
                         'path': data.get('path'),
                         'message': data.get('message') or data.get('error'),
-                        'createdAt': data.get('createdAt'),
+                        'createdAt': _ts(data.get('createdAt')),
                     }
                 )
         except Exception:
@@ -335,3 +361,560 @@ class AdminRepository:
             return items
         except Exception:
             return []
+
+    # ─────────────────────── overview ────────────────────────────────────────
+
+    def overview(self) -> Dict[str, Any]:
+        total_users = _safe_aggregate_count('users')
+        total_reels = _safe_aggregate_count('smart_reels')
+        pending_reels = _safe_count_where('smart_reels', 'status', 'pending')
+        hidden_reels = _safe_count_where('smart_reels', 'status', 'hidden')
+        rejected_reels = _safe_count_where('smart_reels', 'status', 'rejected')
+        reported_reels = _safe_aggregate_count('reel_reports')
+        total_sell = _safe_aggregate_count('marketplace_items')
+        pending_sell = _safe_count_where('marketplace_items', 'status', 'pending')
+        reported_sell = _safe_aggregate_count('item_reports')
+        total_reports = sum(_safe_aggregate_count(c) for c in _REPORT_COLLECTIONS)
+        open_reports = _safe_count_where('reel_reports', 'status', 'open') + _safe_count_where('item_reports', 'status', 'open')
+        system_errors = _safe_aggregate_count('system_errors')
+        ai_errors = _safe_count_where('ai_usage_logs', 'blocked', True)
+        failed_uploads = _safe_aggregate_count('scrape_failures')
+        total_products = _safe_aggregate_count('products')
+
+        return {
+            'totalUsers': total_users,
+            'totalReels': total_reels,
+            'pendingReels': pending_reels,
+            'reportedReels': reported_reels,
+            'hiddenReels': hidden_reels,
+            'rejectedReels': rejected_reels,
+            'totalSellItems': total_sell,
+            'pendingSellItems': pending_sell,
+            'reportedSellItems': reported_sell,
+            'totalReports': total_reports,
+            'openReports': open_reports,
+            'systemErrors': system_errors,
+            'aiErrors': ai_errors,
+            'failedUploads': failed_uploads,
+            'totalProducts': total_products,
+        }
+
+    # ─────────────────────── moderation: reels ───────────────────────────────
+
+    def list_moderation_reels(self, status: str = 'pending', limit: int = 50) -> Dict[str, Any]:
+        items: List[Dict[str, Any]] = []
+        try:
+            query = db.collection('smart_reels').where('status', '==', status).limit(limit)
+            for doc in query.stream():
+                data = doc.to_dict() or {}
+                reel_id = data.get('id') or doc.id
+                reports_count = 0
+                try:
+                    reports_count = sum(1 for _ in db.collection('reel_reports').where('reelId', '==', reel_id).limit(50).stream())
+                except Exception:
+                    pass
+                items.append({
+                    'id': reel_id,
+                    'title': data.get('title'),
+                    'description': data.get('description'),
+                    'status': data.get('status', 'approved'),
+                    'creatorId': data.get('creator_id'),
+                    'creatorName': data.get('creator_name'),
+                    'creatorUsername': data.get('creator_username') or '',
+                    'creatorAvatarUrl': data.get('creator_avatar_url'),
+                    'thumbnailUrl': data.get('thumbnail_url'),
+                    'videoUrl': data.get('video_mp4_url'),
+                    'price': _to_float(data.get('current_price')),
+                    'currency': data.get('currency'),
+                    'store': data.get('store'),
+                    'reportsCount': reports_count,
+                    'createdAt': _ts(data.get('created_at') or data.get('createdAt')),
+                    'itemType': 'reel',
+                })
+        except Exception:
+            pass
+        return {'items': items, 'total': len(items)}
+
+    def _moderate_reel(
+        self,
+        reel_id: str,
+        new_status: str,
+        admin_uid: str,
+        admin_email: str,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ref = db.collection('smart_reels').document(reel_id)
+        doc = ref.get()
+        before_status = None
+        if doc.exists:
+            before_status = (doc.to_dict() or {}).get('status')
+        ref.update({'status': new_status, 'updatedAt': _now_iso(), 'adminModeratedAt': _now_iso()})
+        self._write_admin_log(
+            action=f'reel_{new_status}',
+            target_type='reel',
+            target_id=reel_id,
+            admin_uid=admin_uid,
+            admin_email=admin_email,
+            before_status=before_status,
+            after_status=new_status,
+            reason=reason,
+        )
+        return {'ok': True, 'id': reel_id, 'status': new_status}
+
+    def approve_reel(self, reel_id: str, admin_uid: str, admin_email: str, reason: Optional[str] = None) -> Dict[str, Any]:
+        return self._moderate_reel(reel_id, 'approved', admin_uid, admin_email, reason)
+
+    def reject_reel(self, reel_id: str, admin_uid: str, admin_email: str, reason: Optional[str] = None) -> Dict[str, Any]:
+        return self._moderate_reel(reel_id, 'rejected', admin_uid, admin_email, reason)
+
+    def hide_reel(self, reel_id: str, admin_uid: str, admin_email: str, reason: Optional[str] = None) -> Dict[str, Any]:
+        return self._moderate_reel(reel_id, 'hidden', admin_uid, admin_email, reason)
+
+    def restore_reel(self, reel_id: str, admin_uid: str, admin_email: str) -> Dict[str, Any]:
+        return self._moderate_reel(reel_id, 'approved', admin_uid, admin_email)
+
+    # ─────────────────────── moderation: marketplace ─────────────────────────
+
+    def list_moderation_marketplace(self, status: str = 'pending', limit: int = 50) -> Dict[str, Any]:
+        items: List[Dict[str, Any]] = []
+        try:
+            query = db.collection('marketplace_items').where('status', '==', status).limit(limit)
+            for doc in query.stream():
+                data = doc.to_dict() or {}
+                item_id = doc.id
+                reports_count = 0
+                try:
+                    reports_count = sum(
+                        1 for _ in db.collection('item_reports').where('itemId', '==', item_id).limit(50).stream()
+                    )
+                except Exception:
+                    pass
+                price_raw = data.get('price') or data.get('currentPrice') or data.get('salePrice')
+                items.append({
+                    'id': item_id,
+                    'title': data.get('title') or data.get('name'),
+                    'description': data.get('description'),
+                    'status': data.get('status', 'active'),
+                    'creatorId': data.get('sellerId') or data.get('userId') or data.get('creatorId'),
+                    'creatorName': data.get('sellerName'),
+                    'creatorUsername': data.get('sellerUsername') or '',
+                    'creatorAvatarUrl': data.get('sellerAvatarUrl'),
+                    'imageUrl': (data.get('images') or [''])[0] if isinstance(data.get('images'), list) else data.get('imageUrl'),
+                    'price': _to_float(price_raw) if price_raw is not None else None,
+                    'currency': data.get('currency'),
+                    'store': data.get('store') or data.get('category'),
+                    'category': data.get('category'),
+                    'reportsCount': reports_count,
+                    'createdAt': _ts(data.get('createdAt')),
+                    'itemType': 'marketplace',
+                })
+        except Exception:
+            pass
+        return {'items': items, 'total': len(items)}
+
+    def _moderate_marketplace(
+        self,
+        item_id: str,
+        new_status: str,
+        admin_uid: str,
+        admin_email: str,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ref = db.collection('marketplace_items').document(item_id)
+        doc = ref.get()
+        before_status = None
+        if doc.exists:
+            before_status = (doc.to_dict() or {}).get('status')
+        is_active = new_status in {'active', 'approved', 'published'}
+        ref.update({
+            'status': new_status,
+            'isActive': is_active,
+            'updatedAt': _now_iso(),
+            'adminModeratedAt': _now_iso(),
+        })
+        self._write_admin_log(
+            action=f'marketplace_{new_status}',
+            target_type='marketplace_item',
+            target_id=item_id,
+            admin_uid=admin_uid,
+            admin_email=admin_email,
+            before_status=before_status,
+            after_status=new_status,
+            reason=reason,
+        )
+        return {'ok': True, 'id': item_id, 'status': new_status}
+
+    def approve_marketplace_item(self, item_id: str, admin_uid: str, admin_email: str, reason: Optional[str] = None) -> Dict[str, Any]:
+        return self._moderate_marketplace(item_id, 'approved', admin_uid, admin_email, reason)
+
+    def reject_marketplace_item(self, item_id: str, admin_uid: str, admin_email: str, reason: Optional[str] = None) -> Dict[str, Any]:
+        return self._moderate_marketplace(item_id, 'rejected', admin_uid, admin_email, reason)
+
+    def hide_marketplace_item(self, item_id: str, admin_uid: str, admin_email: str, reason: Optional[str] = None) -> Dict[str, Any]:
+        return self._moderate_marketplace(item_id, 'hidden', admin_uid, admin_email, reason)
+
+    def restore_marketplace_item(self, item_id: str, admin_uid: str, admin_email: str) -> Dict[str, Any]:
+        return self._moderate_marketplace(item_id, 'active', admin_uid, admin_email)
+
+    # ─────────────────────── reports center ──────────────────────────────────
+
+    def list_reports(self, limit: int = 50) -> Dict[str, Any]:
+        reports: List[Dict[str, Any]] = []
+        per_coll = max(1, limit // len(_REPORT_COLLECTIONS))
+        collection_types = {
+            'reel_reports': 'reel_report',
+            'item_reports': 'marketplace_report',
+            'marketplace_reports': 'marketplace_report',
+            'product_reports': 'product_report',
+        }
+        for coll_name in _REPORT_COLLECTIONS:
+            try:
+                docs = db.collection(coll_name).limit(per_coll).stream()
+                for doc in docs:
+                    data = doc.to_dict() or {}
+                    reports.append({
+                        'id': doc.id,
+                        'reportType': collection_types.get(coll_name, coll_name),
+                        'targetId': data.get('reelId') or data.get('itemId') or data.get('productId') or data.get('targetId'),
+                        'targetTitle': data.get('reelTitle') or data.get('itemTitle') or data.get('productName') or data.get('targetTitle'),
+                        'reporterId': data.get('reporterId') or data.get('userId') or data.get('uid'),
+                        'reporterName': data.get('reporterName') or data.get('userName'),
+                        'reason': data.get('reason'),
+                        'status': data.get('status') or 'open',
+                        'adminNote': data.get('adminNote') or data.get('note'),
+                        'createdAt': _ts(data.get('createdAt')),
+                        'updatedAt': _ts(data.get('updatedAt')),
+                    })
+            except Exception:
+                pass
+        reports.sort(key=lambda r: r.get('createdAt') or '', reverse=True)
+        reports = reports[:limit]
+        return {'reports': reports, 'total': len(reports)}
+
+    def _resolve_report_collection(self, report_id: str) -> Optional[str]:
+        for coll in _REPORT_COLLECTIONS:
+            try:
+                doc = db.collection(coll).document(report_id).get()
+                if doc.exists:
+                    return coll
+            except Exception:
+                pass
+        return None
+
+    def update_report_status(
+        self,
+        report_id: str,
+        new_status: str,
+        admin_uid: str,
+        admin_email: str,
+        note: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        coll = self._resolve_report_collection(report_id)
+        if not coll:
+            return {'ok': False, 'error': 'Report not found'}
+        update: Dict[str, Any] = {'status': new_status, 'updatedAt': _now_iso()}
+        if note:
+            update['adminNote'] = note
+        db.collection(coll).document(report_id).update(update)
+        self._write_admin_log(
+            action=f'report_{new_status}',
+            target_type='report',
+            target_id=report_id,
+            admin_uid=admin_uid,
+            admin_email=admin_email,
+            after_status=new_status,
+            note=note,
+        )
+        return {'ok': True, 'id': report_id, 'status': new_status}
+
+    # ─────────────────────── user management ─────────────────────────────────
+
+    def list_users(self, limit: int = 50) -> Dict[str, Any]:
+        users: List[Dict[str, Any]] = []
+        try:
+            docs = db.collection('users').limit(limit).stream()
+            for doc in docs:
+                data = doc.to_dict() or {}
+                role = str(data.get('role') or data.get('userRole') or 'user').lower()
+                users.append({
+                    'uid': doc.id,
+                    'email': data.get('email') or '',
+                    'displayName': data.get('displayName') or data.get('display_name') or '',
+                    'username': data.get('username') or '',
+                    'photoUrl': data.get('photoUrl') or data.get('photo_url') or data.get('avatarUrl') or '',
+                    'role': role,
+                    'isAdmin': bool(data.get('isAdmin') or data.get('admin') or role in {'admin', 'owner', 'super_admin'}),
+                    'isVerified': bool(data.get('isVerified') or data.get('is_verified')),
+                    'sellerVerified': bool(data.get('sellerVerified') or data.get('seller_verified')),
+                    'isBanned': bool(data.get('isBanned') or data.get('banned')),
+                    'reportsCount': int(data.get('reportsCount') or 0),
+                    'reelsCount': int(data.get('reelsCount') or 0),
+                    'sellItemsCount': int(data.get('sellItemsCount') or 0),
+                    'followersCount': int(data.get('followersCount') or 0),
+                    'createdAt': _ts(data.get('createdAt')),
+                })
+        except Exception:
+            pass
+        return {'users': users, 'total': len(users)}
+
+    def get_user(self, uid: str) -> Optional[Dict[str, Any]]:
+        try:
+            doc = db.collection('users').document(uid).get()
+            if not doc.exists:
+                return None
+            data = doc.to_dict() or {}
+            role = str(data.get('role') or data.get('userRole') or 'user').lower()
+            return {
+                'uid': doc.id,
+                'email': data.get('email') or '',
+                'displayName': data.get('displayName') or data.get('display_name') or '',
+                'username': data.get('username') or '',
+                'photoUrl': data.get('photoUrl') or data.get('photo_url') or data.get('avatarUrl') or '',
+                'role': role,
+                'isAdmin': bool(data.get('isAdmin') or data.get('admin') or role in {'admin', 'owner', 'super_admin'}),
+                'isVerified': bool(data.get('isVerified') or data.get('is_verified')),
+                'sellerVerified': bool(data.get('sellerVerified') or data.get('seller_verified')),
+                'isBanned': bool(data.get('isBanned') or data.get('banned')),
+                'reportsCount': int(data.get('reportsCount') or 0),
+                'reelsCount': int(data.get('reelsCount') or 0),
+                'sellItemsCount': int(data.get('sellItemsCount') or 0),
+                'followersCount': int(data.get('followersCount') or 0),
+                'createdAt': _ts(data.get('createdAt')),
+            }
+        except Exception:
+            return None
+
+    def _update_user_field(
+        self,
+        uid: str,
+        updates: Dict[str, Any],
+        action: str,
+        admin_uid: str,
+        admin_email: str,
+        reason: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ref = db.collection('users').document(uid)
+        updates['updatedAt'] = _now_iso()
+        ref.set(updates, merge=True)
+        self._write_admin_log(
+            action=action,
+            target_type='user',
+            target_id=uid,
+            admin_uid=admin_uid,
+            admin_email=admin_email,
+            reason=reason,
+            note=note,
+        )
+        return {'ok': True, 'uid': uid}
+
+    def verify_user(self, uid: str, admin_uid: str, admin_email: str) -> Dict[str, Any]:
+        return self._update_user_field(uid, {'isVerified': True, 'is_verified': True}, 'user_verify', admin_uid, admin_email)
+
+    def unverify_user(self, uid: str, admin_uid: str, admin_email: str) -> Dict[str, Any]:
+        return self._update_user_field(uid, {'isVerified': False, 'is_verified': False}, 'user_unverify', admin_uid, admin_email)
+
+    def verify_seller(self, uid: str, admin_uid: str, admin_email: str) -> Dict[str, Any]:
+        return self._update_user_field(uid, {'sellerVerified': True, 'seller_verified': True}, 'seller_verify', admin_uid, admin_email)
+
+    def remove_seller_verification(self, uid: str, admin_uid: str, admin_email: str) -> Dict[str, Any]:
+        return self._update_user_field(uid, {'sellerVerified': False, 'seller_verified': False}, 'seller_unverify', admin_uid, admin_email)
+
+    def ban_user(self, uid: str, admin_uid: str, admin_email: str, reason: Optional[str] = None) -> Dict[str, Any]:
+        return self._update_user_field(uid, {'isBanned': True, 'banned': True, 'banReason': reason}, 'user_ban', admin_uid, admin_email, reason=reason)
+
+    def unban_user(self, uid: str, admin_uid: str, admin_email: str) -> Dict[str, Any]:
+        return self._update_user_field(uid, {'isBanned': False, 'banned': False}, 'user_unban', admin_uid, admin_email)
+
+    def change_user_role(self, uid: str, role: str, admin_uid: str, admin_email: str) -> Dict[str, Any]:
+        safe_roles = {'user', 'creator', 'seller', 'merchant'}
+        if role not in safe_roles:
+            return {'ok': False, 'error': f'Role must be one of: {", ".join(safe_roles)}'}
+        return self._update_user_field(uid, {'role': role, 'userRole': role}, f'user_role_{role}', admin_uid, admin_email)
+
+    # ─────────────────────── product quality ─────────────────────────────────
+
+    def list_product_quality(self, limit: int = 50) -> Dict[str, Any]:
+        items: List[Dict[str, Any]] = []
+
+        def _add(data: Dict[str, Any], doc_id: str, issue: str) -> None:
+            name = data.get('name') or data.get('title') or data.get('productName')
+            items.append({
+                'id': doc_id,
+                'name': name,
+                'store': data.get('store') or data.get('source'),
+                'price': _to_float(data.get('price') or data.get('currentPrice') or 0),
+                'imageUrl': data.get('imageUrl') or data.get('image') or data.get('thumbnail'),
+                'affiliateUrl': data.get('affiliateUrl') or data.get('productUrl') or data.get('url'),
+                'status': data.get('status'),
+                'issue': issue,
+                'countryCode': data.get('countryCode'),
+            })
+
+        per_issue = max(10, limit // 4)
+
+        # Missing image
+        try:
+            for doc in db.collection('products').where('imageUrl', '==', '').limit(per_issue).stream():
+                data = doc.to_dict() or {}
+                _add(data, doc.id, 'missing_image')
+        except Exception:
+            pass
+
+        # Missing URL / affiliate link
+        try:
+            for doc in db.collection('products').where('affiliateUrl', '==', '').limit(per_issue).stream():
+                data = doc.to_dict() or {}
+                _add(data, doc.id, 'missing_url')
+        except Exception:
+            pass
+
+        # Needs review
+        try:
+            for doc in db.collection('products').where('status', '==', 'needs_market_review').limit(per_issue).stream():
+                data = doc.to_dict() or {}
+                _add(data, doc.id, 'needs_review')
+        except Exception:
+            pass
+
+        # Hidden
+        try:
+            for doc in db.collection('products').where('status', '==', 'hidden').limit(per_issue).stream():
+                data = doc.to_dict() or {}
+                _add(data, doc.id, 'hidden')
+        except Exception:
+            pass
+
+        seen_ids: set = set()
+        unique: List[Dict[str, Any]] = []
+        for item in items:
+            if item['id'] not in seen_ids:
+                seen_ids.add(item['id'])
+                unique.append(item)
+        unique = unique[:limit]
+        return {'items': unique, 'total': len(unique)}
+
+    def _moderate_product(
+        self,
+        product_id: str,
+        updates: Dict[str, Any],
+        action: str,
+        admin_uid: str,
+        admin_email: str,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ref = db.collection('products').document(product_id)
+        doc = ref.get()
+        before_status = None
+        if doc.exists:
+            before_status = (doc.to_dict() or {}).get('status')
+        updates['updatedAt'] = _now_iso()
+        ref.set(updates, merge=True)
+        self._write_admin_log(
+            action=action,
+            target_type='product',
+            target_id=product_id,
+            admin_uid=admin_uid,
+            admin_email=admin_email,
+            before_status=before_status,
+            after_status=updates.get('status'),
+            reason=reason,
+        )
+        return {'ok': True, 'id': product_id}
+
+    def hide_product(self, product_id: str, admin_uid: str, admin_email: str, reason: Optional[str] = None) -> Dict[str, Any]:
+        return self._moderate_product(product_id, {'status': 'hidden', 'isActive': False}, 'product_hide', admin_uid, admin_email, reason)
+
+    def restore_product(self, product_id: str, admin_uid: str, admin_email: str) -> Dict[str, Any]:
+        return self._moderate_product(product_id, {'status': 'active', 'isActive': True}, 'product_restore', admin_uid, admin_email)
+
+    def mark_product_review(self, product_id: str, admin_uid: str, admin_email: str, reason: Optional[str] = None) -> Dict[str, Any]:
+        return self._moderate_product(product_id, {'status': 'needs_market_review', 'adminIssue': reason}, 'product_mark_review', admin_uid, admin_email, reason)
+
+    # ─────────────────────── system health ───────────────────────────────────
+
+    def system_health(self) -> Dict[str, Any]:
+        errors = self.system_errors(limit=25)
+        scrape_failures = self.failed_scrapings(limit=25)
+        ai_errors = self.recent_ai_queries(limit=20)
+
+        import_logs: List[Dict[str, Any]] = []
+        try:
+            docs = db.collection('import_logs').order_by('createdAt', direction='DESCENDING').limit(20).stream()
+            for doc in docs:
+                data = doc.to_dict() or {}
+                import_logs.append({
+                    'id': doc.id,
+                    'source': data.get('source') or data.get('provider'),
+                    'status': data.get('status'),
+                    'itemsImported': int(data.get('itemsImported') or data.get('count') or 0),
+                    'errors': int(data.get('errors') or data.get('errorCount') or 0),
+                    'createdAt': _ts(data.get('createdAt')),
+                })
+        except Exception:
+            pass
+
+        return {
+            'systemErrors': errors,
+            'importLogs': import_logs,
+            'aiErrors': ai_errors,
+            'failedScrapings': scrape_failures,
+        }
+
+    # ─────────────────────── audit logs ──────────────────────────────────────
+
+    def list_admin_logs(self, limit: int = 50) -> Dict[str, Any]:
+        logs: List[Dict[str, Any]] = []
+        try:
+            docs = (
+                db.collection('admin_logs')
+                .order_by('createdAt', direction='DESCENDING')
+                .limit(limit)
+                .stream()
+            )
+            for doc in docs:
+                data = doc.to_dict() or {}
+                logs.append({
+                    'id': doc.id,
+                    'adminUid': data.get('adminUid') or '',
+                    'adminEmail': data.get('adminEmail') or '',
+                    'action': data.get('action') or '',
+                    'targetType': data.get('targetType') or '',
+                    'targetId': data.get('targetId') or '',
+                    'beforeStatus': data.get('beforeStatus'),
+                    'afterStatus': data.get('afterStatus'),
+                    'reason': data.get('reason'),
+                    'note': data.get('note'),
+                    'createdAt': _ts(data.get('createdAt')),
+                })
+        except Exception:
+            pass
+        return {'logs': logs, 'total': len(logs)}
+
+    def _write_admin_log(
+        self,
+        action: str,
+        target_type: str,
+        target_id: str,
+        admin_uid: str,
+        admin_email: str,
+        before_status: Optional[str] = None,
+        after_status: Optional[str] = None,
+        reason: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> None:
+        try:
+            db.collection('admin_logs').add({
+                'adminUid': admin_uid,
+                'adminEmail': admin_email,
+                'action': action,
+                'targetType': target_type,
+                'targetId': target_id,
+                'beforeStatus': before_status,
+                'afterStatus': after_status,
+                'reason': reason,
+                'note': note,
+                'createdAt': _now_iso(),
+            })
+        except Exception:
+            pass
