@@ -1,6 +1,6 @@
 from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
-from core.auth import require_user
+from core.auth import require_active_user, require_user
 from core.market_config import normalize_market
 from services.marketplace_service import MarketplaceService
 
@@ -12,7 +12,7 @@ def list_marketplace_items(limit: int = Query(default=30, ge=1, le=100), country
     return {'items': service.list_items(limit=limit, city=city, category=category, country=normalize_market(country))}
 
 @router.post('/items')
-def create_marketplace_item(payload: Dict[str, Any], current_user: dict = Depends(require_user)):
+def create_marketplace_item(payload: Dict[str, Any], current_user: dict = Depends(require_active_user)):
     try:
         return service.create_item(payload, current_user=current_user)
     except ValueError as exc:
@@ -29,7 +29,7 @@ def get_marketplace_item(item_id: str):
 def update_marketplace_item(
     item_id: str,
     payload: Dict[str, Any],
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     try:
         item = service.update_item(item_id, payload, current_user=current_user)
@@ -40,7 +40,7 @@ def update_marketplace_item(
     return item
 
 @router.delete('/items/{item_id}')
-def delete_marketplace_item(item_id: str, current_user: dict = Depends(require_user)):
+def delete_marketplace_item(item_id: str, current_user: dict = Depends(require_active_user)):
     try:
         deleted = service.delete_item(item_id, current_user=current_user)
     except PermissionError as exc:
@@ -53,7 +53,7 @@ def delete_marketplace_item(item_id: str, current_user: dict = Depends(require_u
 def favorite_marketplace_item(
     item_id: str,
     payload: Dict[str, Any] | None = None,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     return service.favorite_item(item_id, current_user['uid'])
 
@@ -61,7 +61,7 @@ def favorite_marketplace_item(
 def report_marketplace_item(
     item_id: str,
     payload: Dict[str, Any] | None = None,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     reason = (payload or {}).get('reason') or 'No reason provided'
     return service.report_item(item_id, current_user['uid'], reason)

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from core.auth import require_user
+from core.auth import require_active_user, require_user
 from schemas.message_schema import (
     ConversationListResponse,
     ConversationOut,
@@ -17,7 +17,7 @@ router = APIRouter(prefix='/messages', tags=['Messages'])
 @router.post('/start', response_model=ConversationOut)
 async def start_conversation(
     payload: StartConversationRequest,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     try:
         item = message_service.start_conversation(payload, current_user=current_user)
@@ -57,7 +57,7 @@ async def get_conversation(
 async def send_message(
     conversation_id: str,
     payload: SendMessageRequest,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     item = message_service.send_message(
         conversation_id=conversation_id,

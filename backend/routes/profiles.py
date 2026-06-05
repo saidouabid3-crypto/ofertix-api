@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from core.auth import require_user
+from core.auth import require_active_user, require_user
 from schemas.profile_schema import (
     CreatorProfileResponse,
     ProfileUpdateIn,
@@ -13,7 +13,7 @@ router = APIRouter(prefix='/profiles', tags=['Profiles'])
 
 
 @router.get('/me', response_model=PublicProfileOut)
-async def get_my_profile(current_user: dict = Depends(require_user)):
+async def get_my_profile(current_user: dict = Depends(require_active_user)):
     profile = profile_service.get_profile(current_user['uid'])
     if not profile:
         raise HTTPException(status_code=404, detail='Profile not found')
@@ -55,19 +55,19 @@ async def get_creator_profile(uid: str, limit: int = Query(default=30, ge=1, le=
 
 
 @router.post('/{uid}/follow')
-async def follow_profile(uid: str, current_user: dict = Depends(require_user)):
+async def follow_profile(uid: str, current_user: dict = Depends(require_active_user)):
     return profile_service.follow_profile(uid=uid, follower_uid=current_user['uid'])
 
 
 @router.delete('/{uid}/follow')
-async def unfollow_profile(uid: str, current_user: dict = Depends(require_user)):
+async def unfollow_profile(uid: str, current_user: dict = Depends(require_active_user)):
     return profile_service.unfollow_profile(uid=uid, follower_uid=current_user['uid'])
 
 
 @router.put('/me', response_model=PublicProfileOut)
 async def update_my_profile(
     payload: ProfileUpdateIn,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     """Update authenticated user's own profile. Only safe mutable fields accepted."""
     uid = current_user['uid']

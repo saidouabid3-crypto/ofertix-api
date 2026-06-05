@@ -9,7 +9,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from core.auth import optional_user, require_admin, require_user
+from core.auth import optional_user, require_active_user, require_admin, require_user
 
 router = APIRouter(tags=["ofertix-local"])
 
@@ -432,7 +432,7 @@ async def merchant_stores(current_user: dict | None = Depends(optional_user)):
 @router.post("/api/merchant/stores")
 async def create_merchant_store(
     payload: LocalStorePayload,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     merchant = _required_uid(current_user)
     store = await asyncio.to_thread(repo.save_store, payload, merchant)
@@ -449,7 +449,7 @@ async def merchant_offers(current_user: dict | None = Depends(optional_user)):
 @router.post("/api/merchant/offers")
 async def create_merchant_offer(
     payload: LocalOfferPayload,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     payload.status = "pending"
     merchant = _required_uid(current_user)

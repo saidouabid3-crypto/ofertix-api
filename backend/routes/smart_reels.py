@@ -2,7 +2,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
-from core.auth import require_user
+from core.auth import require_active_user, require_user
 from schemas.smart_reel_schema import (
     SmartReelCommentCreate,
     SmartReelCommentOut,
@@ -31,7 +31,7 @@ async def get_smart_reels_feed(
 @router.post('', response_model=SmartReelOut)
 async def create_smart_reel(
     payload: SmartReelCreate,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     return smart_reel_service.create_reel(payload, current_user=current_user)
 
@@ -47,7 +47,7 @@ async def upload_smart_reel(
     currency: str = Form('EUR'),
     affiliate_url: Optional[str] = Form(None),
     product_id: Optional[str] = Form(None),
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     if not video.content_type or not video.content_type.startswith('video/'):
         raise HTTPException(status_code=400, detail='Only video files are allowed')
@@ -76,7 +76,7 @@ async def upload_smart_reel(
 async def update_smart_reel(
     reel_id: str,
     payload: SmartReelUpdate,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     reel = smart_reel_service.update_reel(
         reel_id=reel_id,
@@ -93,7 +93,7 @@ async def update_smart_reel(
 @router.delete('/{reel_id}')
 async def delete_smart_reel(
     reel_id: str,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     ok = smart_reel_service.delete_reel(reel_id=reel_id, current_user=current_user)
 
@@ -116,7 +116,7 @@ async def track_view(reel_id: str):
 @router.post('/{reel_id}/like')
 async def like_reel(
     reel_id: str,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     result = smart_reel_service.like(reel_id, viewer_id=current_user['uid'])
     if result is None:
@@ -137,7 +137,7 @@ async def click_reel(reel_id: str):
 @router.post('/{reel_id}/save')
 async def save_reel(
     reel_id: str,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     result = smart_reel_service.save(reel_id, viewer_id=current_user['uid'])
     if result is None:
@@ -148,7 +148,7 @@ async def save_reel(
 @router.post('/{reel_id}/report')
 async def report_reel(
     reel_id: str,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     result = smart_reel_service.report(reel_id, viewer_id=current_user['uid'])
     return {'ok': True, 'reports': result.get('reports', 0), 'already_reported': result.get('already_reported', False)}
@@ -158,7 +158,7 @@ async def report_reel(
 async def message_creator(
     reel_id: str,
     payload: SmartReelMessageCreate,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     message = smart_reel_service.send_message(
         reel_id=reel_id,
@@ -181,7 +181,7 @@ async def get_comments(reel_id: str, limit: int = Query(default=50, ge=1, le=100
 async def add_comment(
     reel_id: str,
     payload: SmartReelCommentCreate,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     comment = smart_reel_service.add_comment(
         reel_id=reel_id,
@@ -198,7 +198,7 @@ async def add_comment(
 @router.post('/creators/{creator_id}/follow')
 async def follow_creator(
     creator_id: str,
-    current_user: dict = Depends(require_user),
+    current_user: dict = Depends(require_active_user),
 ):
     return smart_reel_service.follow_creator(
         creator_id=creator_id,

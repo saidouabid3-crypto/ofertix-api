@@ -64,6 +64,32 @@ def _is_admin_from_firestore_sync(uid: str) -> bool:
         return False
 
 
+def _is_banned_sync(uid: str) -> bool:
+    try:
+        doc = db.collection("users").document(uid).get()
+        if not doc.exists:
+            return False
+        data = doc.to_dict() or {}
+        status = str(data.get("status") or "").lower().strip()
+        return bool(
+            data.get("isBanned") is True
+            or data.get("banned") is True
+            or status == "banned"
+        )
+    except Exception:
+        return False
+
+
+async def require_active_user(authorization: str | None = Header(default=None)) -> dict:
+    """require_user + ban enforcement. Use on user-generated write endpoints."""
+    user = require_user(authorization)
+    uid = user.get("uid") or ""
+    is_banned = await asyncio.to_thread(_is_banned_sync, uid)
+    if is_banned:
+        raise HTTPException(status_code=403, detail="USER_BANNED")
+    return user
+
+
 async def require_admin(authorization: str | None = Header(default=None)) -> dict:
     user = require_user(authorization)
     uid = user.get("uid") or ""
