@@ -10,12 +10,16 @@ class SmartReelRepository:
     COMMENTS_COLLECTION = 'smart_reel_comments'
     FOLLOWS_COLLECTION = 'user_follows'
     MESSAGES_COLLECTION = 'smart_reel_messages'
+    LIKES_COLLECTION = 'reel_likes'
+    SAVES_COLLECTION = 'reel_saves'
 
     def __init__(self):
         self.collection = db.collection(self.COLLECTION)
         self.comments_collection = db.collection(self.COMMENTS_COLLECTION)
         self.follows_collection = db.collection(self.FOLLOWS_COLLECTION)
         self.messages_collection = db.collection(self.MESSAGES_COLLECTION)
+        self.likes_collection = db.collection(self.LIKES_COLLECTION)
+        self.saves_collection = db.collection(self.SAVES_COLLECTION)
 
     def create(self, data: dict) -> dict:
         now = datetime.utcnow().isoformat()
@@ -228,15 +232,82 @@ class SmartReelRepository:
         current = int((snap.to_dict() or {}).get(field, 0)) if snap.exists else 0
         user_ref.set({field: max(0, current + amount), 'updated_at': datetime.utcnow().isoformat()}, merge=True)
 
+    def toggle_like(self, reel_id: str, viewer_id: str) -> dict:
+        """Toggle like for authenticated viewer. Returns {is_liked, likes}."""
+        viewer_id = (viewer_id or '').strip()
+        if not viewer_id or viewer_id == 'mobile_user':
+            return {'is_liked': False, 'likes': 0}
+
+        reel_doc = self.collection.document(reel_id).get()
+        if not reel_doc.exists:
+            return {'is_liked': False, 'likes': 0}
+
+        like_id = f'{viewer_id}_{reel_id}'
+        like_ref = self.likes_collection.document(like_id)
+        like_doc = like_ref.get()
+        reel_data = reel_doc.to_dict() or {}
+        current_likes = max(0, int(reel_data.get('likes', 0)))
+        now = datetime.utcnow().isoformat()
+
+        if like_doc.exists:
+            like_ref.delete()
+            new_likes = max(0, current_likes - 1)
+            self.collection.document(reel_id).update({'likes': new_likes, 'updated_at': now})
+            return {'is_liked': False, 'likes': new_likes}
+        else:
+            like_ref.set({'reel_id': reel_id, 'viewer_id': viewer_id, 'created_at': now})
+            new_likes = current_likes + 1
+            self.collection.document(reel_id).update({'likes': new_likes, 'updated_at': now})
+            return {'is_liked': True, 'likes': new_likes}
+
+    def toggle_save(self, reel_id: str, viewer_id: str) -> dict:
+        """Toggle save for authenticated viewer. Returns {is_saved, saves}."""
+        viewer_id = (viewer_id or '').strip()
+        if not viewer_id or viewer_id == 'mobile_user':
+            return {'is_saved': False, 'saves': 0}
+
+        reel_doc = self.collection.document(reel_id).get()
+        if not reel_doc.exists:
+            return {'is_saved': False, 'saves': 0}
+
+        save_id = f'{viewer_id}_{reel_id}'
+        save_ref = self.saves_collection.document(save_id)
+        save_doc = save_ref.get()
+        reel_data = reel_doc.to_dict() or {}
+        current_saves = max(0, int(reel_data.get('saves', 0)))
+        now = datetime.utcnow().isoformat()
+
+        if save_doc.exists:
+            save_ref.delete()
+            new_saves = max(0, current_saves - 1)
+            self.collection.document(reel_id).update({'saves': new_saves, 'updated_at': now})
+            return {'is_saved': False, 'saves': new_saves}
+        else:
+            save_ref.set({'reel_id': reel_id, 'viewer_id': viewer_id, 'created_at': now})
+            new_saves = current_saves + 1
+            self.collection.document(reel_id).update({'saves': new_saves, 'updated_at': now})
+            return {'is_saved': True, 'saves': new_saves}
+
     def _attach_social_state(self, reel: dict, viewer_id: Optional[str] = None) -> dict:
         creator_id = str(reel.get('creator_id') or 'mobile_user')
+        reel_id = str(reel.get('id') or '')
         viewer_id = (viewer_id or '').strip()
+
         reel['is_liked'] = False
         reel['is_saved'] = False
         reel['is_following'] = False
-        if viewer_id and creator_id and viewer_id != creator_id:
+
+        if viewer_id and viewer_id != 'mobile_user' and reel_id:
+            like_id = f'{viewer_id}_{reel_id}'
+            reel['is_liked'] = self.likes_collection.document(like_id).get().exists
+
+            save_id = f'{viewer_id}_{reel_id}'
+            reel['is_saved'] = self.saves_collection.document(save_id).get().exists
+
+        if viewer_id and viewer_id != 'mobile_user' and creator_id and viewer_id != creator_id:
             follow_id = f'{viewer_id}_{creator_id}'
             reel['is_following'] = self.follows_collection.document(follow_id).get().exists
+
         return reel
 
     def _normalize_reel(self, reel: dict) -> dict:

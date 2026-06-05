@@ -147,14 +147,27 @@ class SmartReelService:
     def track_view(self, reel_id: str):
         return smart_reel_repository.increment(reel_id, 'views')
 
-    def like(self, reel_id: str):
-        return smart_reel_repository.increment(reel_id, 'likes')
+    def like(self, reel_id: str, viewer_id: str | None = None) -> dict:
+        """Toggle like. Returns {is_liked, likes}. Requires viewer_id for per-user dedup."""
+        if viewer_id:
+            return smart_reel_repository.toggle_like(reel_id, viewer_id)
+        # Anonymous like — plain increment (no per-user dedup).
+        result = smart_reel_repository.increment(reel_id, 'likes')
+        if not result:
+            return {'is_liked': False, 'likes': 0}
+        return {'is_liked': False, 'likes': result.get('likes', 0)}
 
     def click(self, reel_id: str):
         return smart_reel_repository.increment(reel_id, 'clicks')
 
-    def save(self, reel_id: str):
-        return smart_reel_repository.increment(reel_id, 'saves')
+    def save(self, reel_id: str, viewer_id: str | None = None) -> dict:
+        """Toggle save. Returns {is_saved, saves}. Requires viewer_id for per-user dedup."""
+        if viewer_id:
+            return smart_reel_repository.toggle_save(reel_id, viewer_id)
+        result = smart_reel_repository.increment(reel_id, 'saves')
+        if not result:
+            return {'is_saved': False, 'saves': 0}
+        return {'is_saved': False, 'saves': result.get('saves', 0)}
 
     def report(self, reel_id: str):
         return smart_reel_repository.increment(reel_id, 'reports')
