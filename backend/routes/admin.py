@@ -12,6 +12,12 @@ from schemas.admin_schema import (
     AdminSystemHealthResponse,
     AdminUserList,
     AdminUserView,
+    DuplicateActionRequest,
+    DuplicateGroupList,
+    DuplicateHideRequest,
+    DuplicateMarkMasterRequest,
+    DuplicateScanRequest,
+    DuplicateScanSummary,
     ProductTrustScanRequest,
     ProductTrustScanSummary,
 )
@@ -202,6 +208,69 @@ async def scan_products_quality(
         limit=body.limit,
         write=body.write,
     )
+
+
+@router.get('/products/duplicates', response_model=DuplicateGroupList)
+async def list_product_duplicates(
+    status: str = Query(default='candidate'),
+    limit: int = Query(default=50, ge=1, le=200),
+    current_user: dict = Depends(require_admin),
+):
+    return admin_service.list_product_duplicates(status=status, limit=limit)
+
+
+@router.post('/products/duplicates/scan', response_model=DuplicateScanSummary)
+async def scan_product_duplicates(
+    body: DuplicateScanRequest = DuplicateScanRequest(),
+    current_user: dict = Depends(require_admin),
+):
+    return admin_service.scan_product_duplicates(dry_run=body.dryRun, limit=body.limit, write=body.write)
+
+
+@router.post('/products/duplicates/{group_id}/mark-master')
+async def mark_duplicate_master(
+    group_id: str,
+    body: DuplicateMarkMasterRequest,
+    current_user: dict = Depends(require_admin),
+):
+    if not body.productId:
+        raise HTTPException(status_code=400, detail='productId is required')
+    result = admin_service.mark_duplicate_master(group_id, body.productId, current_user, body.note)
+    if not result.get('ok'):
+        raise HTTPException(status_code=400, detail=result.get('error', 'Failed'))
+    return result
+
+
+@router.post('/products/{product_id}/duplicates/hide')
+async def hide_duplicate_product(
+    product_id: str,
+    body: DuplicateHideRequest,
+    current_user: dict = Depends(require_admin),
+):
+    result = admin_service.hide_duplicate_product(product_id, body.masterProductId, current_user, body.note)
+    if not result.get('ok'):
+        raise HTTPException(status_code=400, detail=result.get('error', 'Failed'))
+    return result
+
+
+@router.post('/products/{product_id}/duplicates/dismiss')
+async def dismiss_duplicate_product(
+    product_id: str,
+    body: DuplicateActionRequest = DuplicateActionRequest(),
+    current_user: dict = Depends(require_admin),
+):
+    result = admin_service.dismiss_duplicate_product(product_id, current_user, body.note)
+    if not result.get('ok'):
+        raise HTTPException(status_code=400, detail=result.get('error', 'Failed'))
+    return result
+
+
+@router.post('/products/{product_id}/duplicates/restore')
+async def restore_duplicate_product(product_id: str, current_user: dict = Depends(require_admin)):
+    result = admin_service.restore_duplicate_product(product_id, current_user)
+    if not result.get('ok'):
+        raise HTTPException(status_code=400, detail=result.get('error', 'Failed'))
+    return result
 
 
 @router.post('/products/{product_id}/quality/refresh')

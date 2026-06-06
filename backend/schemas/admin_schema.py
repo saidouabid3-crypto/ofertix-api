@@ -232,6 +232,70 @@ class ProductTrustScanSummary(BaseModel):
     dryRun: bool = True
 
 
+# ─── Product duplicates ───────────────────────────────────────────────────────
+
+class DuplicateScanRequest(BaseModel):
+    dryRun: bool = True
+    limit: int = Field(default=300, ge=1, le=500)
+    write: bool = False
+
+
+class DuplicateScanSummary(BaseModel):
+    scanned: int = 0
+    groupsFound: int = 0
+    candidateProducts: int = 0
+    wouldUpdate: int = 0
+    updated: int = 0
+    dryRun: bool = True
+
+
+class DuplicateProductItem(BaseModel):
+    id: str = ''
+    name: Optional[str] = None
+    imageUrl: Optional[str] = None
+    galleryCount: int = 0
+    price: Optional[float] = None
+    currency: Optional[str] = None
+    store: Optional[str] = None
+    primaryUrl: Optional[str] = None
+    hasAffiliateUrl: bool = False
+    hasProductUrl: bool = False
+    qualityScore: Optional[int] = None
+    trustStatus: Optional[str] = None
+    priceConfidence: Optional[str] = None
+    duplicateStatus: Optional[str] = None
+    duplicateReasons: List[str] = Field(default_factory=list)
+    duplicateScore: int = 0
+    status: Optional[str] = None
+    updatedAt: Optional[str] = None
+
+
+class DuplicateGroup(BaseModel):
+    groupId: str = ''
+    reasonSummary: Optional[str] = None
+    highestScore: int = 0
+    products: List[DuplicateProductItem] = Field(default_factory=list)
+
+
+class DuplicateGroupList(BaseModel):
+    groups: List[DuplicateGroup] = Field(default_factory=list)
+    total: int = 0
+
+
+class DuplicateMarkMasterRequest(BaseModel):
+    productId: str
+    note: Optional[str] = None
+
+
+class DuplicateHideRequest(BaseModel):
+    masterProductId: str
+    note: Optional[str] = None
+
+
+class DuplicateActionRequest(BaseModel):
+    note: Optional[str] = None
+
+
 # ─── System health ────────────────────────────────────────────────────────────
 
 class AdminImportLog(BaseModel):

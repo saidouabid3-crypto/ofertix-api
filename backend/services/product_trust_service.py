@@ -355,6 +355,204 @@ def product_fingerprint(product: dict) -> str:
     return hashlib.md5(raw.encode('utf-8')).hexdigest()
 
 
+# ─── duplicate grouping ───────────────────────────────────────────────────────
+
+_CANDIDATE_THRESHOLD = 60
+
+_DUPLICATE_REASONS = {
+    'same_affiliate_url': 60,
+    'same_product_url': 60,
+    'same_primary_url': 60,
+    'same_main_image': 30,
+    'same_title_store_price': 30,
+    'same_title_similar_price': 15,
+    'same_price': 10,
+    'same_category': 5,
+}
+
+
+def _normalize_text(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9\s]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def _url_key(url: str) -> str:
+    url = re.sub(r'https?://', '', url).split('?')[0].split('#')[0].rstrip('/')
+    return url.lower()[:120]
+
+
+def _get_main_image_url(product: dict) -> str:
+    for f in ['image', 'imageUrl', 'image_url', 'mainImage', 'thumbnail']:
+        val = product.get(f)
+        if val and isinstance(val, str) and val.startswith('http'):
+            return val.strip()
+    return ''
+
+
+def compute_duplicate_score(p1: dict, p2: dict) -> tuple:
+    """Returns (score: int, reasons: list[str]) for two products."""
+    score = 0
+    reasons: List[str] = []
+
+    # Affiliate URL exact match
+    aff1 = _first_str(p1, _LINK_AFFILIATE)
+    aff2 = _first_str(p2, _LINK_AFFILIATE)
+    if aff1 and aff1 == aff2:
+        score += 60
+        reasons.append('same_affiliate_url')
+
+    # Product URL exact match
+    pu1 = _first_str(p1, _LINK_PRODUCT)
+    pu2 = _first_str(p2, _LINK_PRODUCT)
+    if pu1 and pu1 == pu2 and 'same_affiliate_url' not in reasons:
+        score += 60
+        reasons.append('same_product_url')
+
+    # Primary URL key (host+path normalized)
+    if 'same_affiliate_url' not in reasons and 'same_product_url' not in reasons:
+        pr1 = _first_str(p1, _LINK_AFFILIATE + _LINK_PRODUCT + _LINK_OTHER)
+        pr2 = _first_str(p2, _LINK_AFFILIATE + _LINK_PRODUCT + _LINK_OTHER)
+        if pr1 and pr2 and _url_key(pr1) == _url_key(pr2):
+            score += 60
+            reasons.append('same_primary_url')
+
+    # Main image URL match
+    img1 = _get_main_image_url(p1)
+    img2 = _get_main_image_url(p2)
+    if img1 and img1 == img2:
+        score += 30
+        reasons.append('same_main_image')
+
+    # Normalized title + store match
+    t1 = _normalize_text(_first_str(p1, _NAME_FIELDS))[:60]
+    t2 = _normalize_text(_first_str(p2, _NAME_FIELDS))[:60]
+    s1 = _first_str(p1, _STORE_FIELDS).lower().strip()
+    s2 = _first_str(p2, _STORE_FIELDS).lower().strip()
+    if t1 and len(t1) >= 6 and t1 == t2:
+        if s1 and s1 == s2:
+            score += 30
+            reasons.append('same_title_store_price')
+
+    # Same price
+    pr1_raw = next((p1.get(f) for f in _PRICE_FIELDS if p1.get(f) is not None), None)
+    pr2_raw = next((p2.get(f) for f in _PRICE_FIELDS if p2.get(f) is not None), None)
+    px1 = _parse_price(pr1_raw)
+    px2 = _parse_price(pr2_raw)
+    if px1 > 0 and px2 > 0 and abs(px1 - px2) < 0.01:
+        score += 10
+
+    # Same category
+    cat1 = _first_str(p1, _CATEGORY_FIELDS).lower()
+    cat2 = _first_str(p2, _CATEGORY_FIELDS).lower()
+    if cat1 and cat1 == cat2:
+        score += 5
+
+    return min(score, 100), reasons
+
+
+def group_duplicate_candidates(products: List[dict]) -> List[dict]:
+    """
+    Group products into duplicate candidate groups using bucket matching + union-find.
+    Returns list of group dicts: {groupId, highestScore, reasonSummary, duplicateReasons, products}.
+    """
+    from collections import defaultdict
+
+    product_by_id: Dict[str, dict] = {}
+    for p in products:
+        pid = str(p.get('id') or '')
+        if pid:
+            p['id'] = pid
+            product_by_id[pid] = p
+
+    if len(product_by_id) < 2:
+        return []
+
+    # Build signal buckets (pid → bucket keys, bucket key → list of pids)
+    url_bucket: Dict[str, List[str]] = defaultdict(list)
+    img_bucket: Dict[str, List[str]] = defaultdict(list)
+    title_bucket: Dict[str, List[str]] = defaultdict(list)
+
+    for pid, p in product_by_id.items():
+        # URL bucket: prefer affiliate, then product URL
+        for fields in [_LINK_AFFILIATE, _LINK_PRODUCT]:
+            url = _first_str(p, fields)
+            if url:
+                key = _url_key(url)
+                if key and len(key) > 8:
+                    url_bucket[key].append(pid)
+                    break
+
+        # Image bucket
+        img = _get_main_image_url(p)
+        if img:
+            img_bucket[img].append(pid)
+
+        # Title+store bucket
+        t = _normalize_text(_first_str(p, _NAME_FIELDS))[:50]
+        s = _first_str(p, _STORE_FIELDS).lower().strip()
+        if t and len(t) >= 6 and s:
+            title_bucket[f'{t}|{s}'].append(pid)
+
+    # Union-Find
+    parent: Dict[str, str] = {pid: pid for pid in product_by_id}
+
+    def _find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def _union(a: str, b: str) -> None:
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for bucket in (url_bucket, img_bucket, title_bucket):
+        for pids in bucket.values():
+            if len(pids) >= 2:
+                for i in range(len(pids)):
+                    for j in range(i + 1, len(pids)):
+                        _union(pids[i], pids[j])
+
+    # Collect groups
+    groups_by_root: Dict[str, List[str]] = defaultdict(list)
+    for pid in product_by_id:
+        groups_by_root[_find(pid)].append(pid)
+
+    result: List[dict] = []
+    for root, pids in groups_by_root.items():
+        if len(pids) < 2:
+            continue
+        # Score the group (check up to 5 pairs to keep it fast)
+        max_score = 0
+        all_reasons: set = set()
+        pairs_checked = 0
+        for i in range(len(pids)):
+            for j in range(i + 1, len(pids)):
+                if pairs_checked >= 10:
+                    break
+                sc, rs = compute_duplicate_score(product_by_id[pids[i]], product_by_id[pids[j]])
+                max_score = max(max_score, sc)
+                all_reasons.update(rs)
+                pairs_checked += 1
+
+        if max_score < _CANDIDATE_THRESHOLD:
+            continue
+
+        group_id = hashlib.md5('|'.join(sorted(pids)).encode()).hexdigest()[:12]
+        result.append({
+            'groupId': group_id,
+            'highestScore': max_score,
+            'reasonSummary': ', '.join(sorted(all_reasons)),
+            'duplicateReasons': sorted(all_reasons),
+            'products': [product_by_id[pid] for pid in pids],
+        })
+
+    return result
+
+
 # ─── main entry point ─────────────────────────────────────────────────────────
 
 def build_quality_update(product: dict) -> Dict[str, Any]:

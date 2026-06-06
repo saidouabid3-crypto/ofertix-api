@@ -111,6 +111,26 @@ class AdminService:
     def mark_product_safe(self, product_id: str, admin: dict) -> Dict[str, Any]:
         return self.repo.mark_product_safe(product_id, admin['uid'], admin.get('email', ''))
 
+    # ── duplicate review ──────────────────────────────────────────────────────
+
+    def scan_product_duplicates(self, dry_run: bool, limit: int, write: bool) -> Dict[str, Any]:
+        return self.repo.scan_product_duplicates(limit=limit, dry_run=dry_run, write=write)
+
+    def list_product_duplicates(self, status: str, limit: int) -> Dict[str, Any]:
+        return self.repo.list_product_duplicates(status=status, limit=limit)
+
+    def mark_duplicate_master(self, group_id: str, product_id: str, admin: dict, note: Optional[str]) -> Dict[str, Any]:
+        return self.repo.mark_duplicate_master(group_id, product_id, admin['uid'], admin.get('email', ''), note)
+
+    def hide_duplicate_product(self, product_id: str, master_product_id: str, admin: dict, note: Optional[str]) -> Dict[str, Any]:
+        return self.repo.hide_duplicate_product(product_id, master_product_id, admin['uid'], admin.get('email', ''), note)
+
+    def dismiss_duplicate_product(self, product_id: str, admin: dict, note: Optional[str]) -> Dict[str, Any]:
+        return self.repo.dismiss_duplicate_product(product_id, admin['uid'], admin.get('email', ''), note)
+
+    def restore_duplicate_product(self, product_id: str, admin: dict) -> Dict[str, Any]:
+        return self.repo.restore_duplicate_product(product_id, admin['uid'], admin.get('email', ''))
+
     def refresh_product_quality(self, product_id: str) -> Dict[str, Any]:
         return self.repo.refresh_product_quality(product_id)
 

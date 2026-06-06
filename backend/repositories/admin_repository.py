@@ -838,6 +838,197 @@ class AdminRepository:
     def mark_product_review(self, product_id: str, admin_uid: str, admin_email: str, reason: Optional[str] = None) -> Dict[str, Any]:
         return self._moderate_product(product_id, {'status': 'needs_market_review', 'adminIssue': reason}, 'product_mark_review', admin_uid, admin_email, reason)
 
+    # ─────────────────────── duplicate review ────────────────────────────────
+
+    def scan_product_duplicates(self, limit: int = 300, dry_run: bool = True, write: bool = False) -> Dict[str, Any]:
+        from services.product_trust_service import group_duplicate_candidates
+
+        summary: Dict[str, Any] = {
+            'scanned': 0, 'groupsFound': 0, 'candidateProducts': 0,
+            'wouldUpdate': 0, 'updated': 0, 'dryRun': dry_run,
+        }
+        try:
+            docs = db.collection('products').limit(limit).stream()
+        except Exception:
+            return summary
+
+        products: List[Dict[str, Any]] = []
+        for doc in docs:
+            try:
+                data = doc.to_dict() or {}
+                data['id'] = doc.id
+                products.append(data)
+                summary['scanned'] += 1
+            except Exception:
+                continue
+
+        groups = group_duplicate_candidates(products)
+        summary['groupsFound'] = len(groups)
+
+        candidate_ids: set = set()
+        should_write = (not dry_run) and write
+
+        for group in groups:
+            group_id = group['groupId']
+            reasons = group.get('duplicateReasons', [])
+            score = group.get('highestScore', 0)
+
+            for p in group.get('products', []):
+                pid = str(p.get('id') or '')
+                if not pid:
+                    continue
+                candidate_ids.add(pid)
+                existing_dup_status = p.get('duplicateStatus')
+                if existing_dup_status in {'dismissed', 'not_duplicate', 'master'}:
+                    continue
+                summary['wouldUpdate'] += 1
+                if should_write:
+                    try:
+                        db.collection('products').document(pid).set({
+                            'duplicateStatus': 'candidate',
+                            'duplicateGroupId': group_id,
+                            'duplicateReasons': reasons,
+                            'duplicateScore': score,
+                            'updatedAt': _now_iso(),
+                        }, merge=True)
+                        summary['updated'] += 1
+                    except Exception:
+                        pass
+
+        summary['candidateProducts'] = len(candidate_ids)
+        return summary
+
+    def list_product_duplicates(self, status: str = 'candidate', limit: int = 50) -> Dict[str, Any]:
+        groups_map: Dict[str, List[Dict[str, Any]]] = {}
+
+        def _fetch(s: str) -> None:
+            try:
+                docs = db.collection('products').where('duplicateStatus', '==', s).limit(limit * 2).stream()
+                for doc in docs:
+                    data = doc.to_dict() or {}
+                    data['id'] = doc.id
+                    gid = data.get('duplicateGroupId') or ''
+                    if not gid:
+                        continue
+                    if gid not in groups_map:
+                        groups_map[gid] = []
+                    if len(groups_map[gid]) < 10:
+                        groups_map[gid].append(data)
+            except Exception:
+                pass
+
+        if status == 'all':
+            for s in ['candidate', 'master', 'duplicate', 'dismissed']:
+                _fetch(s)
+        else:
+            _fetch(status or 'candidate')
+
+        groups: List[Dict[str, Any]] = []
+        for gid, products in groups_map.items():
+            if len(products) < 1:
+                continue
+            highest_score = max((p.get('duplicateScore') or 0) for p in products)
+            reasons: set = set()
+            for p in products:
+                for r in (p.get('duplicateReasons') or []):
+                    reasons.add(r)
+            groups.append({
+                'groupId': gid,
+                'reasonSummary': ', '.join(sorted(reasons)),
+                'highestScore': highest_score,
+                'products': [self._to_duplicate_product(p) for p in products],
+            })
+
+        groups = groups[:limit]
+        return {'groups': groups, 'total': len(groups)}
+
+    def _to_duplicate_product(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        media = data.get('mediaQuality') or {}
+        link = data.get('linkHealth') or {}
+        return {
+            'id': data.get('id') or '',
+            'name': data.get('name') or data.get('title') or '',
+            'imageUrl': data.get('imageUrl') or data.get('image') or '',
+            'galleryCount': int(media.get('validImageCount') or 0),
+            'price': _to_float(data.get('price') or data.get('currentPrice') or 0) or None,
+            'currency': data.get('currency') or data.get('currencyCode') or '',
+            'store': data.get('store') or data.get('source') or '',
+            'primaryUrl': link.get('primaryUrl') or data.get('affiliateUrl') or data.get('productUrl') or '',
+            'hasAffiliateUrl': bool(data.get('affiliateUrl')),
+            'hasProductUrl': bool(data.get('productUrl')),
+            'qualityScore': data.get('qualityScore'),
+            'trustStatus': data.get('trustStatus'),
+            'priceConfidence': data.get('priceConfidence'),
+            'duplicateStatus': data.get('duplicateStatus'),
+            'duplicateReasons': list(data.get('duplicateReasons') or []),
+            'duplicateScore': int(data.get('duplicateScore') or 0),
+            'status': data.get('status'),
+            'updatedAt': _ts(data.get('updatedAt')),
+        }
+
+    def mark_duplicate_master(self, group_id: str, product_id: str, admin_uid: str, admin_email: str, note: Optional[str] = None) -> Dict[str, Any]:
+        try:
+            db.collection('products').document(product_id).set({
+                'duplicateStatus': 'master',
+                'duplicateGroupId': group_id,
+                'updatedAt': _now_iso(),
+            }, merge=True)
+            self._write_admin_log('duplicate_mark_master', 'product', product_id, admin_uid, admin_email, note=f'group:{group_id} | {note or ""}')
+            return {'ok': True, 'id': product_id}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    def hide_duplicate_product(self, product_id: str, master_product_id: str, admin_uid: str, admin_email: str, note: Optional[str] = None) -> Dict[str, Any]:
+        try:
+            ref = db.collection('products').document(product_id)
+            doc = ref.get()
+            prev_status = (doc.to_dict() or {}).get('status') if doc.exists else None
+            ref.set({
+                'duplicateStatus': 'duplicate',
+                'duplicateMasterId': master_product_id,
+                'status': 'hidden',
+                'isActive': False,
+                'hiddenReason': 'duplicate',
+                'previousStatus': prev_status,
+                'updatedAt': _now_iso(),
+            }, merge=True)
+            self._write_admin_log('duplicate_hide', 'product', product_id, admin_uid, admin_email,
+                                  before_status=prev_status, after_status='hidden',
+                                  note=f'master:{master_product_id} | {note or ""}')
+            return {'ok': True, 'id': product_id}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    def dismiss_duplicate_product(self, product_id: str, admin_uid: str, admin_email: str, note: Optional[str] = None) -> Dict[str, Any]:
+        try:
+            db.collection('products').document(product_id).set({
+                'duplicateStatus': 'dismissed',
+                'updatedAt': _now_iso(),
+            }, merge=True)
+            self._write_admin_log('duplicate_dismiss', 'product', product_id, admin_uid, admin_email, note=note)
+            return {'ok': True, 'id': product_id}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    def restore_duplicate_product(self, product_id: str, admin_uid: str, admin_email: str) -> Dict[str, Any]:
+        try:
+            ref = db.collection('products').document(product_id)
+            doc = ref.get()
+            data = doc.to_dict() or {}
+            prev_status = data.get('previousStatus') or 'active'
+            ref.set({
+                'duplicateStatus': 'candidate',
+                'status': prev_status,
+                'isActive': prev_status == 'active',
+                'hiddenReason': None,
+                'updatedAt': _now_iso(),
+            }, merge=True)
+            self._write_admin_log('duplicate_restore', 'product', product_id, admin_uid, admin_email,
+                                  before_status='hidden', after_status=prev_status)
+            return {'ok': True, 'id': product_id}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
     def mark_product_safe(self, product_id: str, admin_uid: str, admin_email: str) -> Dict[str, Any]:
         return self._moderate_product(
             product_id,
