@@ -853,16 +853,22 @@ class AdminRepository:
             return summary
 
         products: List[Dict[str, Any]] = []
-        for doc in docs:
-            try:
-                data = doc.to_dict() or {}
-                data['id'] = doc.id
-                products.append(data)
-                summary['scanned'] += 1
-            except Exception:
-                continue
+        try:
+            for doc in docs:
+                try:
+                    data = doc.to_dict() or {}
+                    data['id'] = doc.id
+                    products.append(data)
+                    summary['scanned'] += 1
+                except Exception:
+                    continue
+        except Exception:
+            pass
 
-        groups = group_duplicate_candidates(products)
+        try:
+            groups = group_duplicate_candidates(products)
+        except Exception:
+            groups = []
         summary['groupsFound'] = len(groups)
 
         candidate_ids: set = set()
@@ -925,19 +931,29 @@ class AdminRepository:
 
         groups: List[Dict[str, Any]] = []
         for gid, products in groups_map.items():
-            if len(products) < 1:
+            try:
+                if len(products) < 1:
+                    continue
+                highest_score = max((p.get('duplicateScore') or 0) for p in products)
+                reasons: set = set()
+                for p in products:
+                    for r in (p.get('duplicateReasons') or []):
+                        if isinstance(r, str):
+                            reasons.add(r)
+                product_items = []
+                for p in products:
+                    try:
+                        product_items.append(self._to_duplicate_product(p))
+                    except Exception:
+                        continue
+                groups.append({
+                    'groupId': gid,
+                    'reasonSummary': ', '.join(sorted(reasons)),
+                    'highestScore': int(highest_score),
+                    'products': product_items,
+                })
+            except Exception:
                 continue
-            highest_score = max((p.get('duplicateScore') or 0) for p in products)
-            reasons: set = set()
-            for p in products:
-                for r in (p.get('duplicateReasons') or []):
-                    reasons.add(r)
-            groups.append({
-                'groupId': gid,
-                'reasonSummary': ', '.join(sorted(reasons)),
-                'highestScore': highest_score,
-                'products': [self._to_duplicate_product(p) for p in products],
-            })
 
         groups = groups[:limit]
         return {'groups': groups, 'total': len(groups)}

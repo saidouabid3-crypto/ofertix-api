@@ -46,6 +46,7 @@ _PENALTIES: Dict[str, int] = {
 _CRITICAL_FLAGS = {'missing_link', 'missing_image', 'missing_price', 'invalid_link'}
 _IGNORED_COUNTRY_VALUES = {'global', 'unknown', 'null', ''}
 _IGNORED_CATEGORY_VALUES = {'general', 'other', 'unknown', ''}
+_INVALID_CURRENCY_VALUES = {'global', 'unknown', 'null', 'none', 'n/a', 'na', '', 'undefined', 'mixed', 'other'}
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
@@ -74,6 +75,15 @@ def _is_valid_http_url(url: str) -> bool:
     if not url.startswith(('http://', 'https://')):
         return False
     return len(url) > 10
+
+
+def _clean_currency(currency: str) -> str:
+    """Return '' if currency value is not a real currency identifier."""
+    if not currency:
+        return ''
+    if currency.lower().strip() in _INVALID_CURRENCY_VALUES:
+        return ''
+    return currency.strip()
 
 
 # ─── media quality ────────────────────────────────────────────────────────────
@@ -171,10 +181,9 @@ def analyze_price_confidence(product: dict) -> str:
             break
 
     price = _parse_price(price_raw)
-    if price < 0:
+    # price <= 0 is always missing — 0 is not a valid price
+    if price <= 0:
         return 'missing'
-    if price == 0:
-        return 'needs_review'
 
     old_price_raw = None
     for f in _OLD_PRICE_FIELDS:
@@ -192,8 +201,11 @@ def analyze_price_confidence(product: dict) -> str:
             if discount > 95:
                 return 'needs_review'
 
-    currency = _first_str(product, _CURRENCY_FIELDS)
+    # Clean invalid currency values like 'global', 'unknown', etc.
+    currency = _clean_currency(_first_str(product, _CURRENCY_FIELDS))
     country = _first_str(product, _COUNTRY_FIELDS)
+    if country.lower() in _IGNORED_COUNTRY_VALUES:
+        country = ''
     store = _first_str(product, _STORE_FIELDS)
 
     if currency and (country or store):
@@ -269,8 +281,9 @@ def compute_quality_flags(
     elif price_confidence == 'needs_review':
         flags.append('suspicious_price')
 
-    # Currency
-    if not normalized.get('normalizedCurrency'):
+    # Currency — also reject known invalid values like 'global'
+    raw_currency = _clean_currency(normalized.get('normalizedCurrency') or '')
+    if not raw_currency:
         flags.append('missing_currency')
 
     # Country
@@ -321,8 +334,10 @@ def determine_trust_status(score: int, flags: List[str], existing_status: Option
     if score < 35 or is_critical_combo:
         return 'quarantined'
 
-    critical_present = flag_set & _CRITICAL_FLAGS
-    if score >= 85 and not critical_present:
+    # suspicious_price also blocks trusted — a product with unknown/zero price cannot be trusted
+    trust_blocking = _CRITICAL_FLAGS | {'suspicious_price', 'missing_currency'}
+    blocking_present = flag_set & trust_blocking
+    if score >= 85 and not blocking_present:
         return 'trusted'
     if score >= 65:
         return 'ok'
