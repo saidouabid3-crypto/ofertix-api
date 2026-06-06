@@ -53,7 +53,10 @@ def main():
         print("Create it and put your Impact .txt files inside.")
         sys.exit(1)
 
-    feeds = sorted(feeds_dir.glob("*.txt"))
+    feeds = sorted(
+        f for f in feeds_dir.glob("*.txt")
+        if not f.name.upper().startswith("README")
+    )
 
     if not feeds:
         print("ERROR: no .txt Impact feeds found in:", feeds_dir)
