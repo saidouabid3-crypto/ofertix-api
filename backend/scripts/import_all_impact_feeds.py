@@ -11,7 +11,7 @@ FEEDS_DIR = BASE_DIR / "data" / "impact_feeds"
 ACTIVE_FEED = BASE_DIR / "data" / "impact_dhgate.txt"
 
 
-def run_one_feed(feed_path: Path, limit_each: int) -> int:
+def run_one_feed(feed_path: Path, limit_each: int, dry_run: bool = False) -> int:
     print("\n" + "=" * 80)
     print("Importing feed:", feed_path.name)
     print("Source:", feed_path)
@@ -22,7 +22,7 @@ def run_one_feed(feed_path: Path, limit_each: int) -> int:
 
     code = (
         "from importers.impact import import_impact; "
-        f"import_impact(limit={limit_each})"
+        f"import_impact(limit={limit_each}, dry_run={dry_run}, governed=True)"
     )
 
     result = subprocess.run(
@@ -35,16 +35,18 @@ def run_one_feed(feed_path: Path, limit_each: int) -> int:
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--limit-each", type=int, default=200)
-    parser.add_argument("--folder", type=str, default=str(FEEDS_DIR))
+    parser = argparse.ArgumentParser(description="Ofertix governed multi Impact importer")
+    parser.add_argument("--limit-each", type=int, default=200, help="Max products per feed file")
+    parser.add_argument("--folder", type=str, default=str(FEEDS_DIR), help="Folder with .txt Impact feed files")
+    parser.add_argument("--dry-run", action="store_true", help="Classify products without writing to Firestore")
     args = parser.parse_args()
 
     feeds_dir = Path(args.folder)
 
-    print("Ofertix multi Impact importer")
+    print("Ofertix governed multi Impact importer")
     print("Feeds folder:", feeds_dir)
     print("Limit each:", args.limit_each)
+    print("Dry run:", args.dry_run)
 
     if not feeds_dir.exists():
         print("ERROR: feeds folder not found:", feeds_dir)
@@ -64,7 +66,7 @@ def main():
     failed = 0
 
     for feed in feeds:
-        rc = run_one_feed(feed, args.limit_each)
+        rc = run_one_feed(feed, args.limit_each, dry_run=args.dry_run)
         if rc != 0:
             failed += 1
             print("FAILED:", feed.name)

@@ -138,25 +138,45 @@ def impact_doc_id(product: dict) -> str:
     )
 
 
-def import_impact(feed_path: str | None = None, limit: int | None = None):
+def import_impact(
+    feed_path: str | None = None,
+    limit: int | None = None,
+    dry_run: bool = False,
+    governed: bool = True,
+):
+    from services.catalog_governance_service import GovernedImportSession
+
     path = Path(feed_path) if feed_path else IMPACT_FEED_PATH
     max_items = limit or IMPACT_IMPORT_LIMIT
 
     print("Impact importer started")
     print("Feed:", path)
     print("Limit:", max_items)
+    print("Dry run:", dry_run)
+    print("Governed:", governed)
 
     if not path.exists():
         print(f"Impact importer skipped: feed file not found: {path}")
         print("Put the feed here: backend/data/impact_dhgate.txt")
         return {"imported": 0, "active": 0, "needs_review": 0, "skipped": 0}
 
+    session: GovernedImportSession | None = None
+    if governed:
+        store_name = "DHgate"
+        session = GovernedImportSession(
+            source="impact",
+            store=store_name,
+            source_type="impact_feed",
+            dry_run=dry_run,
+        )
+        session.start()
+
     imported = 0
     active = 0
     review = 0
     skipped = 0
     batch_count = 0
-    batch = db.batch()
+    fb_batch = db.batch()
 
     with path.open("r", encoding="utf-8", errors="replace", newline="") as file:
         reader = csv.DictReader(file, delimiter="\t")
@@ -168,34 +188,61 @@ def import_impact(feed_path: str | None = None, limit: int | None = None):
             product = build_impact_product(row)
             if not product:
                 skipped += 1
+                if session:
+                    session.skipped += 1
                 continue
 
-            doc_ref = db.collection("products").document(impact_doc_id(product))
-            batch.set(doc_ref, product, merge=True)
+            # Governance enrichment
+            if session:
+                try:
+                    gov_fields = session.process_product(product)
+                    product.update(gov_fields)
+                except Exception:
+                    pass
+
+            if not dry_run:
+                doc_ref = db.collection("products").document(impact_doc_id(product))
+                fb_batch.set(doc_ref, product, merge=True)
+                batch_count += 1
+
+                if batch_count >= 400:
+                    fb_batch.commit()
+                    fb_batch = db.batch()
+                    batch_count = 0
 
             imported += 1
-            batch_count += 1
 
-            if product["status"] == "active":
+            if product.get("status") == "active":
                 active += 1
             else:
                 review += 1
 
-            if batch_count >= 400:
-                batch.commit()
-                batch = db.batch()
-                batch_count = 0
+    if not dry_run and batch_count:
+        fb_batch.commit()
 
-    if batch_count:
-        batch.commit()
+    # Finalize governance session
+    gov_result = {}
+    if session:
+        gov_result = session.finalize()
 
     print("Impact importer finished")
     print("Imported:", imported)
     print("Active:", active)
     print("Needs review:", review)
     print("Skipped:", skipped)
+    if gov_result:
+        print("Batch ID:", gov_result.get("batchId"))
+        print("Batch status:", gov_result.get("status"))
+        print("Source trust before:", gov_result.get("sourceTrustScoreBefore"))
+        print("Source trust after:", gov_result.get("sourceTrustScoreAfter"))
 
-    return {"imported": imported, "active": active, "needs_review": review, "skipped": skipped}
+    return {
+        "imported": imported,
+        "active": active,
+        "needs_review": review,
+        "skipped": skipped,
+        "governance": gov_result,
+    }
 
 
 if __name__ == "__main__":

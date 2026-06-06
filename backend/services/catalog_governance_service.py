@@ -7,6 +7,326 @@ from typing import Any, Dict, List, Optional
 
 from core.firebase import db
 
+# ─── governed import session ──────────────────────────────────────────────────
+
+
+class GovernedImportSession:
+    """
+    Context object for a single governed import run.
+
+    Usage:
+        session = GovernedImportSession('impact', 'DHgate', dry_run=False)
+        session.start()
+        for product in products:
+            gov_fields = session.process_product(product)
+            product.update(gov_fields)
+            # ... write product to Firestore ...
+        result = session.finalize()
+    """
+
+    def __init__(
+        self,
+        source: str,
+        store: str,
+        source_type: str = 'feed',
+        dry_run: bool = False,
+        admin_uid: Optional[str] = None,
+        batch_id: Optional[str] = None,
+    ) -> None:
+        self.source = (source or '').lower().strip()
+        self.store = store or source or ''
+        self.source_type = source_type
+        self.dry_run = dry_run
+        self.admin_uid = admin_uid
+
+        ts = datetime.now(timezone.utc)
+        self.batch_id = batch_id or f'{self.source}_{int(ts.timestamp())}'
+        self.started_at = ts.isoformat()
+
+        self._config: Dict[str, Any] = dict(_DEFAULT_CONFIG)
+        self._source_trust_score_before: int = 100
+        self._source_trust_status_before: str = 'ok'
+        self._fingerprints: Dict[str, str] = {}
+
+        # counters
+        self.imported = 0
+        self.created = 0
+        self.updated = 0
+        self.skipped = 0
+        self.failed = 0
+        self.approved = 0
+        self.needs_review = 0
+        self.quarantined = 0
+        self.duplicate_candidates = 0
+        self.missing_image = 0
+        self.missing_link = 0
+        self.missing_price = 0
+        self.missing_currency = 0
+        self.single_image_only = 0
+        self.no_gallery = 0
+        self.duplicate_images_count = 0
+        self.invalid_link = 0
+        self.weak_description = 0
+        self.quality_warnings = 0
+        self.errors: List[str] = []
+        self.warnings: List[str] = []
+
+    def start(self) -> 'GovernedImportSession':
+        try:
+            self._config = get_catalog_governance_config()
+        except Exception:
+            pass
+
+        _trust_doc_id = re.sub(r'[^a-z0-9_\-.]', '_', (self.store or self.source).lower())[:60]
+        try:
+            snap = db.collection('source_trust').document(_trust_doc_id).get()
+            if snap.exists:
+                data = snap.to_dict() or {}
+                self._source_trust_score_before = int(data.get('sourceTrustScore', 100))
+                self._source_trust_status_before = str(data.get('status', 'ok'))
+        except Exception:
+            pass
+
+        if not self.dry_run:
+            try:
+                db.collection('import_batches').document(self.batch_id).set({
+                    'importBatchId': self.batch_id,
+                    'source': self.source,
+                    'sourceType': self.source_type,
+                    'store': self.store,
+                    'startedAt': self.started_at,
+                    'status': 'running',
+                    'dryRun': False,
+                    'sourceTrustScoreBefore': self._source_trust_score_before,
+                    'createdBy': self.admin_uid,
+                    'updatedAt': self.started_at,
+                })
+            except Exception as exc:
+                self.errors.append(f'batch_start: {str(exc)[:80]}')
+
+        return self
+
+    def process_product(self, product: dict) -> Dict[str, Any]:
+        """
+        Run Product Trust Engine + admission gate on a normalized product.
+        Returns governance fields to merge into the product before saving.
+        Counter attributes are updated in place.
+        """
+        from services.product_trust_service import build_quality_update, product_fingerprint as _fp
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        try:
+            trust = build_quality_update(product)
+        except Exception as exc:
+            self.failed += 1
+            self.errors.append(f'trust: {str(exc)[:60]}')
+            return {
+                'importBatchId': self.batch_id,
+                'lastImportedAt': now,
+                'admissionStatus': 'needs_review',
+                'publicVisible': False,
+            }
+
+        flags: List[str] = list(trust.get('qualityFlags') or [])
+        flag_set = set(flags)
+
+        if 'missing_image' in flag_set:
+            self.missing_image += 1
+        if 'missing_link' in flag_set:
+            self.missing_link += 1
+        if 'missing_price' in flag_set:
+            self.missing_price += 1
+        if 'missing_currency' in flag_set:
+            self.missing_currency += 1
+        if 'single_image_only' in flag_set:
+            self.single_image_only += 1
+        if 'no_gallery' in flag_set:
+            self.no_gallery += 1
+        if 'duplicate_images' in flag_set:
+            self.duplicate_images_count += 1
+        if 'invalid_link' in flag_set:
+            self.invalid_link += 1
+        if 'weak_description' in flag_set:
+            self.weak_description += 1
+
+        # Within-batch duplicate detection
+        try:
+            fp = _fp(product)
+        except Exception:
+            fp = ''
+
+        if fp:
+            if fp in self._fingerprints:
+                self.duplicate_candidates += 1
+                if 'duplicate_candidate' not in flag_set:
+                    flags.append('duplicate_candidate')
+                    flag_set.add('duplicate_candidate')
+                    trust['qualityFlags'] = flags
+            else:
+                self._fingerprints[fp] = product.get('id') or ''
+
+        # Admission gate
+        try:
+            admission = decide_product_admission(
+                product,
+                trust,
+                self._source_trust_score_before,
+                self._source_trust_status_before,
+                self._config,
+            )
+        except Exception:
+            admission = {
+                'admissionStatus': 'needs_review',
+                'publicVisible': False,
+                'reasons': ['admission_error'],
+                'recommendedAction': 'review',
+                'catalogRankScore': 0,
+                'riskLevel': 'high',
+                'sourceTrustScoreAtImport': self._source_trust_score_before,
+            }
+
+        admission_status: str = admission.get('admissionStatus', 'needs_review')
+
+        if admission_status == 'approved':
+            self.approved += 1
+        elif admission_status == 'quarantined':
+            self.quarantined += 1
+        else:
+            self.needs_review += 1
+            if admission_status not in {'duplicate_candidate'}:
+                self.quality_warnings += 1
+
+        # Identity
+        try:
+            identity = build_product_identity(product)
+        except Exception:
+            identity = {}
+
+        self.imported += 1
+
+        gov: Dict[str, Any] = {
+            'importBatchId': self.batch_id,
+            'lastImportedAt': now,
+            'firstImportedAt': now,
+            'sourceKey': identity.get('sourceKey', ''),
+            'identityType': identity.get('identityType', ''),
+            'admissionStatus': admission_status,
+            'publicVisible': admission.get('publicVisible', True),
+            'riskLevel': admission.get('riskLevel', 'medium'),
+            'catalogRankScore': admission.get('catalogRankScore', 0),
+            'qualityReasons': admission.get('reasons', []),
+            'sourceTrustScoreAtImport': self._source_trust_score_before,
+        }
+        if fp:
+            gov['productFingerprint'] = fp
+            gov['duplicateFingerprint'] = fp
+
+        gov.update(trust)
+        return gov
+
+    def finalize(
+        self,
+        extra_errors: Optional[List[str]] = None,
+        extra_warnings: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        try:
+            started_dt = datetime.fromisoformat(self.started_at.replace('Z', '+00:00'))
+            duration_ms = int((now - started_dt).total_seconds() * 1000)
+        except Exception:
+            duration_ms = 0
+
+        now_iso = now.isoformat()
+
+        if extra_errors:
+            self.errors.extend(extra_errors)
+        if extra_warnings:
+            self.warnings.extend(extra_warnings)
+
+        has_errors = bool(self.errors) or self.failed > 0
+        has_warnings = self.quality_warnings > 0 or self.needs_review > 0 or self.quarantined > 0 or bool(self.warnings)
+
+        if has_errors and self.imported == 0:
+            status = 'failed'
+        elif has_warnings:
+            status = 'completed_with_warnings'
+        else:
+            status = 'completed'
+
+        counters: Dict[str, Any] = {
+            'imported': self.imported,
+            'created': self.created,
+            'updated': self.updated,
+            'skipped': self.skipped,
+            'failed': self.failed,
+            'approved': self.approved,
+            'needsReview': self.needs_review,
+            'quarantined': self.quarantined,
+            'duplicateCandidates': self.duplicate_candidates,
+            'missingImage': self.missing_image,
+            'missingLink': self.missing_link,
+            'missingPrice': self.missing_price,
+            'missingCurrency': self.missing_currency,
+            'singleImageOnly': self.single_image_only,
+            'noGallery': self.no_gallery,
+            'duplicateImages': self.duplicate_images_count,
+            'invalidLink': self.invalid_link,
+            'weakDescription': self.weak_description,
+            'qualityWarnings': self.quality_warnings,
+        }
+
+        source_trust_result: Dict[str, Any] = {}
+        if not self.dry_run:
+            try:
+                source_trust_result = update_source_trust(
+                    source=self.source,
+                    store=self.store,
+                    domain='',
+                    batch_stats={**counters, 'status': status},
+                )
+            except Exception:
+                pass
+
+        score_after = source_trust_result.get('sourceTrustScore', self._source_trust_score_before)
+        trust_status_after = source_trust_result.get('status', self._source_trust_status_before)
+
+        batch_doc: Dict[str, Any] = {
+            'importBatchId': self.batch_id,
+            'source': self.source,
+            'sourceType': self.source_type,
+            'store': self.store,
+            'startedAt': self.started_at,
+            'finishedAt': now_iso,
+            'status': status,
+            'dryRun': self.dry_run,
+            'sourceTrustScoreBefore': self._source_trust_score_before,
+            'sourceTrustScoreAfter': score_after,
+            'sourceTrustStatus': trust_status_after,
+            'errors': self.errors[:20],
+            'warnings': self.warnings[:20],
+            'durationMs': duration_ms,
+            'createdBy': self.admin_uid,
+            'updatedAt': now_iso,
+            **counters,
+        }
+
+        if not self.dry_run:
+            try:
+                db.collection('import_batches').document(self.batch_id).set(batch_doc, merge=True)
+            except Exception:
+                pass
+
+        return {
+            'batchId': self.batch_id,
+            'status': status,
+            'dryRun': self.dry_run,
+            'counters': counters,
+            'sourceTrustScoreBefore': self._source_trust_score_before,
+            'sourceTrustScoreAfter': score_after,
+            'durationMs': duration_ms,
+        }
+
 # ─── defaults ────────────────────────────────────────────────────────────────
 
 _DEFAULT_CONFIG: Dict[str, Any] = {
