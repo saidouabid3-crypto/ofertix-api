@@ -4,11 +4,14 @@ from core.auth import require_admin
 from schemas.admin_schema import (
     AdminActionRequest,
     AdminDashboardResponse,
+    AdminImportBatchList,
+    AdminImportBatchModel,
     AdminLogList,
     AdminModerationList,
     AdminOverviewResponse,
     AdminProductQualityList,
     AdminReportList,
+    AdminSourceTrustList,
     AdminSystemHealthResponse,
     AdminUserList,
     AdminUserView,
@@ -18,6 +21,7 @@ from schemas.admin_schema import (
     DuplicateMarkMasterRequest,
     DuplicateScanRequest,
     DuplicateScanSummary,
+    ImportBatchActionRequest,
     ProductTrustScanRequest,
     ProductTrustScanSummary,
 )
@@ -299,6 +303,59 @@ async def restore_product(product_id: str, current_user: dict = Depends(require_
 @router.post('/products/{product_id}/mark-review')
 async def mark_product_review(product_id: str, body: AdminActionRequest = AdminActionRequest(), current_user: dict = Depends(require_admin)):
     return admin_service.mark_product_review(product_id, current_user, body.reason)
+
+
+# ─── import batches ───────────────────────────────────────────────────────────
+
+@router.get('/imports/batches', response_model=AdminImportBatchList)
+async def list_import_batches(
+    limit: int = Query(default=50, ge=1, le=200),
+    current_user: dict = Depends(require_admin),
+):
+    return admin_service.list_import_batches(limit=limit)
+
+
+@router.get('/imports/batches/{batch_id}', response_model=AdminImportBatchModel)
+async def get_import_batch(batch_id: str, current_user: dict = Depends(require_admin)):
+    batch = admin_service.get_import_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail='Import batch not found')
+    return batch
+
+
+@router.post('/imports/batches/{batch_id}/hide-products')
+async def hide_import_batch_products(
+    batch_id: str,
+    body: ImportBatchActionRequest = ImportBatchActionRequest(),
+    current_user: dict = Depends(require_admin),
+):
+    return admin_service.hide_import_batch_products(batch_id, current_user, body.note)
+
+
+@router.post('/imports/batches/{batch_id}/mark-review')
+async def mark_import_batch_review(
+    batch_id: str,
+    body: ImportBatchActionRequest = ImportBatchActionRequest(),
+    current_user: dict = Depends(require_admin),
+):
+    return admin_service.mark_import_batch_review(batch_id, current_user, body.note)
+
+
+@router.post('/imports/batches/{batch_id}/restore-products')
+async def restore_import_batch_products(
+    batch_id: str,
+    body: ImportBatchActionRequest = ImportBatchActionRequest(),
+    current_user: dict = Depends(require_admin),
+):
+    return admin_service.restore_import_batch_products(batch_id, current_user, body.note)
+
+
+@router.get('/imports/source-trust', response_model=AdminSourceTrustList)
+async def list_source_trust(
+    limit: int = Query(default=50, ge=1, le=200),
+    current_user: dict = Depends(require_admin),
+):
+    return admin_service.list_source_trust(limit=limit)
 
 
 # ─── system health ────────────────────────────────────────────────────────────

@@ -335,6 +335,82 @@ class AdminLogList(BaseModel):
     total: int = 0
 
 
+# ─── Import batches ───────────────────────────────────────────────────────────
+
+class AdminImportBatchModel(BaseModel):
+    batchId: str = ''
+    source: Optional[str] = None
+    sourceType: Optional[str] = None
+    store: Optional[str] = None
+    startedAt: Optional[str] = None
+    finishedAt: Optional[str] = None
+    status: Optional[str] = None
+    dryRun: bool = False
+    imported: int = 0
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    failed: int = 0
+    approved: int = 0
+    needsReview: int = 0
+    quarantined: int = 0
+    duplicateCandidates: int = 0
+    missingImage: int = 0
+    missingLink: int = 0
+    missingPrice: int = 0
+    missingCurrency: int = 0
+    singleImageOnly: int = 0
+    noGallery: int = 0
+    duplicateImages: int = 0
+    qualityWarnings: int = 0
+    sourceTrustScore: Optional[int] = None
+    errors: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    durationMs: Optional[int] = None
+    createdBy: Optional[str] = None
+
+
+class AdminImportBatchList(BaseModel):
+    batches: List[AdminImportBatchModel] = Field(default_factory=list)
+    total: int = 0
+
+
+class ImportBatchActionRequest(BaseModel):
+    note: Optional[str] = None
+
+
+# ─── Source trust ─────────────────────────────────────────────────────────────
+
+class AdminSourceTrustModel(BaseModel):
+    id: str = ''
+    source: Optional[str] = None
+    store: Optional[str] = None
+    domain: Optional[str] = None
+    sourceTrustScore: int = 100
+    status: str = 'ok'
+    totalImported: int = 0
+    totalFailed: int = 0
+    totalUpdated: int = 0
+    totalDuplicates: int = 0
+    totalMissingImage: int = 0
+    totalMissingLink: int = 0
+    totalMissingPrice: int = 0
+    totalQuarantined: int = 0
+    totalNeedsReview: int = 0
+    successfulBatches: int = 0
+    failedBatches: int = 0
+    lastImportAt: Optional[str] = None
+    lastSuccessfulImportAt: Optional[str] = None
+    lastFailedImportAt: Optional[str] = None
+    reasons: List[str] = Field(default_factory=list)
+    updatedAt: Optional[str] = None
+
+
+class AdminSourceTrustList(BaseModel):
+    items: List[AdminSourceTrustModel] = Field(default_factory=list)
+    total: int = 0
+
+
 # ─── Action request ──────────────────────────────────────────────────────────
 
 class AdminActionRequest(BaseModel):

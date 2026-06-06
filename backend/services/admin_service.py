@@ -137,6 +137,26 @@ class AdminService:
     def scan_products_quality(self, dry_run: bool, limit: int, write: bool) -> Dict[str, Any]:
         return self.repo.scan_products_quality(limit=limit, dry_run=dry_run, write=write)
 
+    # ── import batches ────────────────────────────────────────────────────────
+
+    def list_import_batches(self, limit: int) -> Dict[str, Any]:
+        return self.repo.list_import_batches(limit=limit)
+
+    def get_import_batch(self, batch_id: str) -> Optional[Dict[str, Any]]:
+        return self.repo.get_import_batch(batch_id)
+
+    def hide_import_batch_products(self, batch_id: str, admin: dict, note: Optional[str]) -> Dict[str, Any]:
+        return self.repo.hide_import_batch_products(batch_id, admin['uid'], admin.get('email', ''), note)
+
+    def mark_import_batch_review(self, batch_id: str, admin: dict, note: Optional[str]) -> Dict[str, Any]:
+        return self.repo.mark_import_batch_review(batch_id, admin['uid'], admin.get('email', ''), note)
+
+    def restore_import_batch_products(self, batch_id: str, admin: dict, note: Optional[str]) -> Dict[str, Any]:
+        return self.repo.restore_import_batch_products(batch_id, admin['uid'], admin.get('email', ''), note)
+
+    def list_source_trust(self, limit: int) -> Dict[str, Any]:
+        return self.repo.list_source_trust(limit=limit)
+
     # ── system health ─────────────────────────────────────────────────────────
 
     def system_health(self) -> Dict[str, Any]:

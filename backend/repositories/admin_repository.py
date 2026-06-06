@@ -1134,6 +1134,228 @@ class AdminRepository:
 
         return summary
 
+    # ─────────────────────── import batches ──────────────────────────────────
+
+    def _batch_to_dict(self, doc_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            'batchId': data.get('batchId') or data.get('importBatchId') or doc_id,
+            'source': data.get('source') or data.get('provider'),
+            'sourceType': data.get('sourceType'),
+            'store': data.get('store'),
+            'startedAt': _ts(data.get('startedAt') or data.get('createdAt')),
+            'finishedAt': _ts(data.get('finishedAt') or data.get('completedAt')),
+            'status': data.get('status'),
+            'dryRun': bool(data.get('dryRun')),
+            'imported': int(data.get('imported') or data.get('itemsImported') or 0),
+            'created': int(data.get('created') or 0),
+            'updated': int(data.get('updated') or 0),
+            'skipped': int(data.get('skipped') or 0),
+            'failed': int(data.get('failed') or data.get('errors') or 0),
+            'approved': int(data.get('approved') or 0),
+            'needsReview': int(data.get('needsReview') or 0),
+            'quarantined': int(data.get('quarantined') or 0),
+            'duplicateCandidates': int(data.get('duplicateCandidates') or 0),
+            'missingImage': int(data.get('missingImage') or 0),
+            'missingLink': int(data.get('missingLink') or 0),
+            'missingPrice': int(data.get('missingPrice') or 0),
+            'missingCurrency': int(data.get('missingCurrency') or 0),
+            'singleImageOnly': int(data.get('singleImageOnly') or 0),
+            'noGallery': int(data.get('noGallery') or 0),
+            'duplicateImages': int(data.get('duplicateImages') or 0),
+            'qualityWarnings': int(data.get('qualityWarnings') or 0),
+            'sourceTrustScore': data.get('sourceTrustScore') or data.get('sourceTrustScoreAfter'),
+            'errors': list(data.get('errors') or []) if isinstance(data.get('errors'), list) else [],
+            'warnings': list(data.get('warnings') or []) if isinstance(data.get('warnings'), list) else [],
+            'durationMs': data.get('durationMs'),
+            'createdBy': data.get('createdBy') or data.get('adminUid'),
+        }
+
+    def list_import_batches(self, limit: int = 50) -> Dict[str, Any]:
+        batches: List[Dict[str, Any]] = []
+        for coll in ('import_batches', 'import_logs'):
+            try:
+                docs = db.collection(coll).order_by('startedAt', direction='DESCENDING').limit(limit).stream()
+                for doc in docs:
+                    data = doc.to_dict() or {}
+                    batches.append(self._batch_to_dict(doc.id, data))
+                if batches:
+                    break
+            except Exception:
+                try:
+                    docs = db.collection(coll).limit(limit).stream()
+                    for doc in docs:
+                        data = doc.to_dict() or {}
+                        batches.append(self._batch_to_dict(doc.id, data))
+                    if batches:
+                        break
+                except Exception:
+                    continue
+        return {'batches': batches, 'total': len(batches)}
+
+    def get_import_batch(self, batch_id: str) -> Optional[Dict[str, Any]]:
+        for coll in ('import_batches', 'import_logs'):
+            try:
+                doc = db.collection(coll).document(batch_id).get()
+                if doc.exists:
+                    return self._batch_to_dict(doc.id, doc.to_dict() or {})
+            except Exception:
+                continue
+        return None
+
+    def _resolve_batch_products(self, batch_id: str, limit: int = 500) -> List[str]:
+        product_ids: List[str] = []
+        try:
+            docs = db.collection('products').where('importBatchId', '==', batch_id).limit(limit).stream()
+            for doc in docs:
+                product_ids.append(doc.id)
+        except Exception:
+            pass
+        return product_ids
+
+    def hide_import_batch_products(
+        self,
+        batch_id: str,
+        admin_uid: str,
+        admin_email: str,
+        note: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        product_ids = self._resolve_batch_products(batch_id)
+        hidden = 0
+        for pid in product_ids:
+            try:
+                ref = db.collection('products').document(pid)
+                doc = ref.get()
+                prev = (doc.to_dict() or {}).get('status') if doc.exists else None
+                if prev in {'rejected', 'banned'}:
+                    continue
+                ref.set({
+                    'status': 'hidden',
+                    'isActive': False,
+                    'hiddenReason': 'import_batch_hidden',
+                    'previousStatus': prev,
+                    'updatedAt': _now_iso(),
+                }, merge=True)
+                hidden += 1
+            except Exception:
+                continue
+        self._write_admin_log(
+            'import_batch_hide_products',
+            'import_batch',
+            batch_id,
+            admin_uid,
+            admin_email,
+            note=f'batchId:{batch_id} | hidden:{hidden} | {note or ""}',
+        )
+        return {'ok': True, 'batchId': batch_id, 'hidden': hidden, 'total': len(product_ids)}
+
+    def mark_import_batch_review(
+        self,
+        batch_id: str,
+        admin_uid: str,
+        admin_email: str,
+        note: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        product_ids = self._resolve_batch_products(batch_id)
+        marked = 0
+        for pid in product_ids:
+            try:
+                ref = db.collection('products').document(pid)
+                doc = ref.get()
+                data = doc.to_dict() or {} if doc.exists else {}
+                if data.get('status') in {'rejected', 'banned', 'hidden'}:
+                    continue
+                ref.set({
+                    'admissionStatus': 'needs_review',
+                    'trustStatus': 'needs_review',
+                    'updatedAt': _now_iso(),
+                }, merge=True)
+                marked += 1
+            except Exception:
+                continue
+        self._write_admin_log(
+            'import_batch_mark_review',
+            'import_batch',
+            batch_id,
+            admin_uid,
+            admin_email,
+            note=f'batchId:{batch_id} | marked:{marked} | {note or ""}',
+        )
+        return {'ok': True, 'batchId': batch_id, 'marked': marked, 'total': len(product_ids)}
+
+    def restore_import_batch_products(
+        self,
+        batch_id: str,
+        admin_uid: str,
+        admin_email: str,
+        note: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        product_ids = self._resolve_batch_products(batch_id)
+        restored = 0
+        for pid in product_ids:
+            try:
+                ref = db.collection('products').document(pid)
+                doc = ref.get()
+                data = doc.to_dict() or {} if doc.exists else {}
+                if data.get('status') in {'rejected', 'banned'}:
+                    continue
+                if data.get('hiddenReason') != 'import_batch_hidden':
+                    continue
+                prev = data.get('previousStatus') or 'active'
+                ref.set({
+                    'status': prev,
+                    'isActive': prev == 'active',
+                    'hiddenReason': None,
+                    'updatedAt': _now_iso(),
+                }, merge=True)
+                restored += 1
+            except Exception:
+                continue
+        self._write_admin_log(
+            'import_batch_restore_products',
+            'import_batch',
+            batch_id,
+            admin_uid,
+            admin_email,
+            note=f'batchId:{batch_id} | restored:{restored} | {note or ""}',
+        )
+        return {'ok': True, 'batchId': batch_id, 'restored': restored, 'total': len(product_ids)}
+
+    # ─────────────────────── source trust ────────────────────────────────────
+
+    def list_source_trust(self, limit: int = 50) -> Dict[str, Any]:
+        items: List[Dict[str, Any]] = []
+        try:
+            docs = db.collection('source_trust').limit(limit).stream()
+            for doc in docs:
+                data = doc.to_dict() or {}
+                items.append({
+                    'id': doc.id,
+                    'source': data.get('source'),
+                    'store': data.get('store'),
+                    'domain': data.get('domain'),
+                    'sourceTrustScore': int(data.get('sourceTrustScore') or 100),
+                    'status': data.get('status') or 'ok',
+                    'totalImported': int(data.get('totalImported') or 0),
+                    'totalFailed': int(data.get('totalFailed') or 0),
+                    'totalUpdated': int(data.get('totalUpdated') or 0),
+                    'totalDuplicates': int(data.get('totalDuplicates') or 0),
+                    'totalMissingImage': int(data.get('totalMissingImage') or 0),
+                    'totalMissingLink': int(data.get('totalMissingLink') or 0),
+                    'totalMissingPrice': int(data.get('totalMissingPrice') or 0),
+                    'totalQuarantined': int(data.get('totalQuarantined') or 0),
+                    'totalNeedsReview': int(data.get('totalNeedsReview') or 0),
+                    'successfulBatches': int(data.get('successfulBatches') or 0),
+                    'failedBatches': int(data.get('failedBatches') or 0),
+                    'lastImportAt': _ts(data.get('lastImportAt')),
+                    'lastSuccessfulImportAt': _ts(data.get('lastSuccessfulImportAt')),
+                    'lastFailedImportAt': _ts(data.get('lastFailedImportAt')),
+                    'reasons': list(data.get('reasons') or []),
+                    'updatedAt': _ts(data.get('updatedAt')),
+                })
+        except Exception:
+            pass
+        return {'items': items, 'total': len(items)}
+
     # ─────────────────────── system health ───────────────────────────────────
 
     def system_health(self) -> Dict[str, Any]:
