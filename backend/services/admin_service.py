@@ -108,6 +108,15 @@ class AdminService:
     def mark_product_review(self, product_id: str, admin: dict, reason: Optional[str]) -> Dict[str, Any]:
         return self.repo.mark_product_review(product_id, admin['uid'], admin.get('email', ''), reason)
 
+    def mark_product_safe(self, product_id: str, admin: dict) -> Dict[str, Any]:
+        return self.repo.mark_product_safe(product_id, admin['uid'], admin.get('email', ''))
+
+    def refresh_product_quality(self, product_id: str) -> Dict[str, Any]:
+        return self.repo.refresh_product_quality(product_id)
+
+    def scan_products_quality(self, dry_run: bool, limit: int, write: bool) -> Dict[str, Any]:
+        return self.repo.scan_products_quality(limit=limit, dry_run=dry_run, write=write)
+
     # ── system health ─────────────────────────────────────────────────────────
 
     def system_health(self) -> Dict[str, Any]:

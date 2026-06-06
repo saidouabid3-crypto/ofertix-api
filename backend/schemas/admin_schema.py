@@ -194,11 +194,42 @@ class AdminProductQualityItem(BaseModel):
     status: Optional[str] = None
     issue: Optional[str] = None
     countryCode: Optional[str] = None
+    # Trust engine fields (populated after a quality scan or refresh)
+    qualityScore: Optional[int] = None
+    trustStatus: Optional[str] = None
+    qualityFlags: Optional[List[str]] = None
+    mediaQuality: Optional[dict] = None
+    linkHealth: Optional[dict] = None
+    priceConfidence: Optional[str] = None
+    qualityUpdatedAt: Optional[str] = None
 
 
 class AdminProductQualityList(BaseModel):
     items: List[AdminProductQualityItem] = Field(default_factory=list)
     total: int = 0
+
+
+# ─── Product trust scan ───────────────────────────────────────────────────────
+
+class ProductTrustScanRequest(BaseModel):
+    dryRun: bool = True
+    limit: int = Field(default=100, ge=1, le=500)
+    write: bool = False
+
+
+class ProductTrustScanSummary(BaseModel):
+    scanned: int = 0
+    wouldUpdate: int = 0
+    updated: int = 0
+    missingImage: int = 0
+    missingLink: int = 0
+    missingPrice: int = 0
+    singleImageOnly: int = 0
+    duplicates: int = 0
+    quarantined: int = 0
+    needsReview: int = 0
+    trusted: int = 0
+    dryRun: bool = True
 
 
 # ─── System health ────────────────────────────────────────────────────────────

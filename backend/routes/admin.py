@@ -12,6 +12,8 @@ from schemas.admin_schema import (
     AdminSystemHealthResponse,
     AdminUserList,
     AdminUserView,
+    ProductTrustScanRequest,
+    ProductTrustScanSummary,
 )
 from services.admin_service import admin_service
 
@@ -188,6 +190,31 @@ async def list_product_quality(
     current_user: dict = Depends(require_admin),
 ):
     return admin_service.list_product_quality(limit=limit)
+
+
+@router.post('/products/quality/scan', response_model=ProductTrustScanSummary)
+async def scan_products_quality(
+    body: ProductTrustScanRequest = ProductTrustScanRequest(),
+    current_user: dict = Depends(require_admin),
+):
+    return admin_service.scan_products_quality(
+        dry_run=body.dryRun,
+        limit=body.limit,
+        write=body.write,
+    )
+
+
+@router.post('/products/{product_id}/quality/refresh')
+async def refresh_product_quality(product_id: str, current_user: dict = Depends(require_admin)):
+    result = admin_service.refresh_product_quality(product_id)
+    if not result.get('ok'):
+        raise HTTPException(status_code=404, detail=result.get('error', 'Product not found'))
+    return result
+
+
+@router.post('/products/{product_id}/mark-safe')
+async def mark_product_safe(product_id: str, current_user: dict = Depends(require_admin)):
+    return admin_service.mark_product_safe(product_id, current_user)
 
 
 @router.post('/products/{product_id}/hide')

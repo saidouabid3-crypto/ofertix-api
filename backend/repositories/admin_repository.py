@@ -749,6 +749,13 @@ class AdminRepository:
                 'status': data.get('status'),
                 'issue': issue,
                 'countryCode': data.get('countryCode'),
+                'qualityScore': data.get('qualityScore'),
+                'trustStatus': data.get('trustStatus'),
+                'qualityFlags': data.get('qualityFlags'),
+                'mediaQuality': data.get('mediaQuality'),
+                'linkHealth': data.get('linkHealth'),
+                'priceConfidence': data.get('priceConfidence'),
+                'qualityUpdatedAt': data.get('qualityUpdatedAt'),
             })
 
         per_issue = max(10, limit // 4)
@@ -830,6 +837,95 @@ class AdminRepository:
 
     def mark_product_review(self, product_id: str, admin_uid: str, admin_email: str, reason: Optional[str] = None) -> Dict[str, Any]:
         return self._moderate_product(product_id, {'status': 'needs_market_review', 'adminIssue': reason}, 'product_mark_review', admin_uid, admin_email, reason)
+
+    def mark_product_safe(self, product_id: str, admin_uid: str, admin_email: str) -> Dict[str, Any]:
+        return self._moderate_product(
+            product_id,
+            {'status': 'active', 'isActive': True, 'trustStatus': 'trusted', 'adminVerified': True},
+            'product_mark_safe',
+            admin_uid,
+            admin_email,
+        )
+
+    def refresh_product_quality(self, product_id: str) -> Dict[str, Any]:
+        from services.product_trust_service import build_quality_update
+        ref = db.collection('products').document(product_id)
+        doc = ref.get()
+        if not doc.exists:
+            return {'ok': False, 'error': 'Product not found'}
+        product = doc.to_dict() or {}
+        product['id'] = product_id
+        update = build_quality_update(product)
+        update['updatedAt'] = _now_iso()
+        ref.set(update, merge=True)
+        return {'ok': True, 'id': product_id, 'qualityScore': update['qualityScore'], 'trustStatus': update['trustStatus']}
+
+    def scan_products_quality(self, limit: int = 100, dry_run: bool = True, write: bool = False) -> Dict[str, Any]:
+        from services.product_trust_service import build_quality_update, product_fingerprint
+
+        summary = {
+            'scanned': 0, 'wouldUpdate': 0, 'updated': 0,
+            'missingImage': 0, 'missingLink': 0, 'missingPrice': 0,
+            'singleImageOnly': 0, 'duplicates': 0, 'quarantined': 0,
+            'needsReview': 0, 'trusted': 0, 'dryRun': dry_run,
+        }
+
+        try:
+            docs = db.collection('products').limit(limit).stream()
+        except Exception:
+            return summary
+
+        fingerprints: Dict[str, str] = {}
+        should_write = (not dry_run) and write
+
+        for doc in docs:
+            try:
+                data = doc.to_dict() or {}
+                data['id'] = doc.id
+                summary['scanned'] += 1
+
+                update = build_quality_update(data)
+                flags: List[str] = update.get('qualityFlags', [])
+                trust_status: str = update.get('trustStatus', '')
+                flag_set = set(flags)
+
+                # Duplicate detection by fingerprint
+                fp = product_fingerprint(data)
+                if fp in fingerprints:
+                    if 'duplicate_candidate' not in flags:
+                        flags.append('duplicate_candidate')
+                        update['qualityFlags'] = flags
+                    summary['duplicates'] += 1
+                else:
+                    fingerprints[fp] = doc.id
+
+                # Counters
+                if 'missing_image' in flag_set:
+                    summary['missingImage'] += 1
+                if 'missing_link' in flag_set:
+                    summary['missingLink'] += 1
+                if 'missing_price' in flag_set:
+                    summary['missingPrice'] += 1
+                if 'single_image_only' in flag_set:
+                    summary['singleImageOnly'] += 1
+                if trust_status == 'quarantined':
+                    summary['quarantined'] += 1
+                elif trust_status == 'needs_review':
+                    summary['needsReview'] += 1
+                elif trust_status == 'trusted':
+                    summary['trusted'] += 1
+
+                summary['wouldUpdate'] += 1
+
+                if should_write:
+                    update['updatedAt'] = _now_iso()
+                    db.collection('products').document(doc.id).set(update, merge=True)
+                    summary['updated'] += 1
+
+            except Exception:
+                continue
+
+        return summary
 
     # ─────────────────────── system health ───────────────────────────────────
 
