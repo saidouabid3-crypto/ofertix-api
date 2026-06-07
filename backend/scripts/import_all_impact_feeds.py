@@ -1,6 +1,5 @@
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -8,7 +7,6 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 FEEDS_DIR = BASE_DIR / "data" / "impact_feeds"
-ACTIVE_FEED = BASE_DIR / "data" / "impact_dhgate.txt"
 
 
 def run_one_feed(feed_path: Path, limit_each: int, dry_run: bool = False) -> int:
@@ -17,12 +15,9 @@ def run_one_feed(feed_path: Path, limit_each: int, dry_run: bool = False) -> int
     print("Source:", feed_path)
     print("=" * 80)
 
-    ACTIVE_FEED.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(feed_path, ACTIVE_FEED)
-
     code = (
         "from importers.impact import import_impact; "
-        f"import_impact(limit={limit_each}, dry_run={dry_run}, governed=True)"
+        f"import_impact(feed_path={repr(str(feed_path))}, limit={limit_each}, dry_run={dry_run}, governed=True)"
     )
 
     result = subprocess.run(
