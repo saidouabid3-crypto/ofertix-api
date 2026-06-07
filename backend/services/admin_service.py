@@ -167,5 +167,15 @@ class AdminService:
     def list_admin_logs(self, limit: int) -> Dict[str, Any]:
         return self.repo.list_admin_logs(limit=limit)
 
+    # ── public catalog governance ─────────────────────────────────────────────
+
+    def catalog_public_preview(self, limit: int = 500) -> Dict[str, Any]:
+        from services.public_catalog_policy import public_catalog_preview
+        return public_catalog_preview(limit=limit)
+
+    def update_catalog_config(self, updates: Dict[str, Any], admin: dict) -> Dict[str, Any]:
+        from services.public_catalog_policy import update_catalog_config
+        return update_catalog_config(updates, admin['uid'], admin.get('email', ''))
+
 
 admin_service = AdminService()

@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from core.firebase import db
 from core.market_config import normalize_market, SUPPORTED_MARKETS
+from services.public_catalog_policy import evaluate_public_product, load_catalog_config
 from utils.market_filter import item_available_for_country, normalize_item_market_fields
 from utils.product_standard import normalize_product
 
@@ -70,10 +71,12 @@ async def get_products(
     read_limit = min(max(limit * 6, 240), 1000)
     offset_to_skip = (page - 1) * limit
 
-    raw_docs = await asyncio.to_thread(_stream_products, read_limit)
+    config, raw_docs = await asyncio.gather(
+        asyncio.to_thread(load_catalog_config),
+        asyncio.to_thread(_stream_products, read_limit),
+    )
 
-    results: list[dict] = []
-    skipped = 0
+    candidates: list[dict] = []
     seen: set[str] = set()
     wanted_category = (category or "").strip().lower()
     wanted_store = (store or "").strip().lower()
@@ -93,26 +96,32 @@ async def get_products(
         if fp in seen:
             continue
         seen.add(fp)
-        if skipped < offset_to_skip:
-            skipped += 1
+
+        decision = evaluate_public_product(item, config)
+        if not decision["visible"]:
             continue
-        results.append(item)
-        if len(results) >= limit:
-            break
+        item["publicRankScore"] = decision["rankScore"]
+        candidates.append(item)
+
+    if config.get("smartRankingEnabled", True):
+        candidates.sort(key=lambda x: x.get("publicRankScore", 50), reverse=True)
+
+    paginated = candidates[offset_to_skip: offset_to_skip + limit]
 
     return {
         "country": market,
         "currency": SUPPORTED_MARKETS[market]["currency"],
         "page": page,
         "limit": limit,
-        "count": len(results),
-        "hasMore": len(results) == limit,
-        "products": results,
+        "count": len(paginated),
+        "hasMore": len(candidates) > offset_to_skip + limit,
+        "products": paginated,
     }
 
 
 @router.get("/product-detail/{product_id}")
 async def get_product_detail(product_id: str, country: str = "es"):
+    # Product detail is always accessible — trust section in UI explains the state.
     market = normalize_market(country)
 
     try:
@@ -167,7 +176,10 @@ async def search_products(payload: ProductSearchRequest):
     limit = max(1, min(payload.limit, 200))
     read_limit = min(limit * 8, 800)
 
-    raw_docs = await asyncio.to_thread(_stream_products, read_limit)
+    config, raw_docs = await asyncio.gather(
+        asyncio.to_thread(load_catalog_config),
+        asyncio.to_thread(_stream_products, read_limit),
+    )
 
     results: list[dict] = []
     seen: set[str] = set()
@@ -194,13 +206,19 @@ async def search_products(payload: ProductSearchRequest):
         if fp in seen:
             continue
         seen.add(fp)
+
+        decision = evaluate_public_product(item, config)
+        if not decision["visible"]:
+            continue
+        item["publicRankScore"] = decision["rankScore"]
         results.append(item)
-        if len(results) >= limit:
-            break
+
+    if config.get("smartRankingEnabled", True):
+        results.sort(key=lambda x: x.get("publicRankScore", 50), reverse=True)
 
     return {
         "country": market,
         "currency": SUPPORTED_MARKETS[market]["currency"],
-        "count": len(results),
-        "products": results,
+        "count": min(len(results), limit),
+        "products": results[:limit],
     }

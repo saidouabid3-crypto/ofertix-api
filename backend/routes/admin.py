@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from core.auth import require_admin
@@ -15,6 +17,7 @@ from schemas.admin_schema import (
     AdminSystemHealthResponse,
     AdminUserList,
     AdminUserView,
+    CatalogConfigUpdateRequest,
     DuplicateActionRequest,
     DuplicateGroupList,
     DuplicateHideRequest,
@@ -373,3 +376,30 @@ async def list_admin_logs(
     current_user: dict = Depends(require_admin),
 ):
     return admin_service.list_admin_logs(limit=limit)
+
+
+# ─── public catalog governance ────────────────────────────────────────────────
+
+@router.get('/catalog/public-preview')
+async def catalog_public_preview(
+    limit: int = Query(default=500, ge=10, le=2000),
+    current_user: dict = Depends(require_admin),
+):
+    """
+    Dry-run: returns what the current catalog config would show/hide.
+    Does NOT write to Firestore or modify any product.
+    """
+    return await asyncio.to_thread(admin_service.catalog_public_preview, limit)
+
+
+@router.patch('/catalog/public-config')
+async def update_catalog_public_config(
+    body: CatalogConfigUpdateRequest,
+    current_user: dict = Depends(require_admin),
+):
+    """
+    Update app_config/catalog_governance fields.
+    Only known boolean keys are accepted; unknown keys are silently ignored.
+    """
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    return await asyncio.to_thread(admin_service.update_catalog_config, updates, current_user)

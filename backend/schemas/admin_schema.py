@@ -417,3 +417,20 @@ class AdminActionRequest(BaseModel):
     reason: Optional[str] = None
     note: Optional[str] = None
     role: Optional[str] = None
+
+
+# ─── Catalog governance ───────────────────────────────────────────────────────
+
+class CatalogConfigUpdateRequest(BaseModel):
+    publicFilteringEnabled: Optional[bool] = None
+    smartRankingEnabled: Optional[bool] = None
+    hideQuarantined: Optional[bool] = None
+    hideHiddenDuplicates: Optional[bool] = None
+    hideRejected: Optional[bool] = None
+    hideExplicitPublicInvisible: Optional[bool] = None
+    hideMissingLink: Optional[bool] = None
+    hideMissingImage: Optional[bool] = None
+    hideMissingPrice: Optional[bool] = None
+    demoteNeedsReview: Optional[bool] = None
+    demoteLimitedInfo: Optional[bool] = None
+    strictMode: Optional[bool] = None
