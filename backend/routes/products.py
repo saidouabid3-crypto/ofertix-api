@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, Query
+from google.api_core.exceptions import FailedPrecondition
 from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import BaseModel
 
@@ -25,9 +26,11 @@ router = APIRouter()
 
 
 def _stream_products(read_limit: int) -> list[dict]:
-    # Firestore .stream() returns a lazy generator; exceptions from the actual
-    # network call fire during iteration, not at .stream() time. Force-exhaust
-    # inside try/except so any auth/quota error is caught cleanly.
+    # The visibleToUsers FieldFilter requires a Firestore composite index.
+    # If the index is absent Firestore raises FailedPrecondition; we fall
+    # back to a full-collection scan and filter in Python.
+    # All other errors (quota, auth) propagate so callers get an honest 5xx
+    # rather than a silent empty list that looks like "no products".
     try:
         docs = list(
             db.collection("products")
@@ -35,11 +38,8 @@ def _stream_products(read_limit: int) -> list[dict]:
             .limit(read_limit)
             .stream()
         )
-    except Exception:
-        try:
-            docs = list(db.collection("products").limit(read_limit).stream())
-        except Exception:
-            return []
+    except FailedPrecondition:
+        docs = list(db.collection("products").limit(read_limit).stream())
     return [{"id": doc.id, **(doc.to_dict() or {})} for doc in docs]
 
 

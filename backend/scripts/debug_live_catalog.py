@@ -17,6 +17,7 @@ from services.public_product_service import (
 SAMPLE_LIMIT = 5
 POLICY_LIMIT = 100
 ROUTE_SIMULATION_LIMIT = 20
+STREAM_LIMIT = 500          # cap raw reads to avoid Firestore quota exhaustion
 MARKETS = ("es", "fr", "us")
 
 
@@ -158,7 +159,7 @@ def main() -> None:
 
     products = [
         {"id": doc.id, **(doc.to_dict() or {})}
-        for doc in db.collection("products").stream()
+        for doc in db.collection("products").limit(STREAM_LIMIT).stream()
     ]
     print(json.dumps(build_report(products), indent=2, sort_keys=True, default=str))
 
