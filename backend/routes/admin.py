@@ -1,6 +1,8 @@
 import asyncio
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from core.auth import require_admin
 from schemas.admin_schema import (
@@ -424,3 +426,80 @@ async def recalibrate_catalog_source_trust(
         body.dryRun,
         current_user,
     )
+
+
+# ─── catalog cache shield ─────────────────────────────────────────────────────
+
+class _CacheWarmRequest(BaseModel):
+    countries: List[str] = Field(default_factory=lambda: ["es", "fr", "us"])
+    pages: int = Field(default=2, ge=1, le=3)
+    limit: int = Field(default=20, ge=5, le=40)
+    includeTrending: bool = True
+
+
+@router.get('/catalog/cache/status')
+async def catalog_cache_status(current_user: dict = Depends(require_admin)):
+    """Return current cache metrics: entries, hits, misses, stale served, errors."""
+    from services.catalog_edge_cache import catalog_cache
+    return catalog_cache.status()
+
+
+@router.post('/catalog/cache/clear')
+async def catalog_cache_clear(current_user: dict = Depends(require_admin)):
+    """Evict all in-memory catalog cache entries. Does not touch Firestore."""
+    from services.catalog_edge_cache import catalog_cache
+    return catalog_cache.clear()
+
+
+@router.post('/catalog/cache/warm')
+async def catalog_cache_warm(
+    body: _CacheWarmRequest = _CacheWarmRequest(),
+    current_user: dict = Depends(require_admin),
+):
+    """
+    Pre-populate catalog cache for specified countries and pages.
+    Writes only the cache — never touches Firestore products.
+    Caps: 8 countries, 3 pages, limit 40.
+    """
+    from routes.products import get_products, ProductSearchRequest, search_products
+    from services.catalog_edge_cache import catalog_cache
+
+    countries = list(dict.fromkeys(body.countries))[:8]
+    pages = min(body.pages, 3)
+    limit = min(body.limit, 40)
+
+    warmed: list[dict] = []
+
+    for country in countries:
+        for page in range(1, pages + 1):
+            try:
+                await get_products(country=country, limit=limit, page=page)
+                warmed.append({"country": country, "page": page, "ok": True})
+            except Exception as exc:
+                warmed.append({
+                    "country": country, "page": page,
+                    "ok": False, "error": type(exc).__name__,
+                })
+
+        if body.includeTrending:
+            try:
+                await search_products(
+                    ProductSearchRequest(query="", country=country, limit=limit)
+                )
+                warmed.append({"country": country, "type": "feed", "ok": True})
+            except Exception as exc:
+                warmed.append({
+                    "country": country, "type": "feed",
+                    "ok": False, "error": type(exc).__name__,
+                })
+
+    catalog_cache.mark_warmup_done()
+    total_ok = sum(1 for w in warmed if w.get("ok"))
+    return {
+        "ok": True,
+        "warmed": len(warmed),
+        "succeeded": total_ok,
+        "failed": len(warmed) - total_ok,
+        "details": warmed,
+        "cacheStatus": catalog_cache.status(),
+    }

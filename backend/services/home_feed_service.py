@@ -3,6 +3,8 @@ from __future__ import annotations
 import random
 from typing import Any
 
+from google.api_core.exceptions import FailedPrecondition
+
 from core.firebase import db
 from core.market_config import SUPPORTED_MARKETS, normalize_market
 from utils.market_filter import item_available_for_country, normalize_item_market_fields
@@ -76,10 +78,18 @@ def _take_pool(items: list[dict[str, Any]], used: set[str], limit: int) -> list[
 def build_home_feed(country: str = 'es', limit: int = 40) -> dict[str, Any]:
     market = normalize_market(country)
     read_limit = max(240, min(800, limit * 10))
+    # FieldFilter on visibleToUsers may raise FailedPrecondition if the index
+    # is missing; fall back to a full-collection scan.  All other errors
+    # (quota, auth) propagate for an honest 5xx.
     try:
-        docs = db.collection('products').where('visibleToUsers', '==', True).limit(read_limit).stream()
-    except Exception:
-        docs = db.collection('products').limit(read_limit).stream()
+        docs = list(
+            db.collection('products')
+            .where('visibleToUsers', '==', True)
+            .limit(read_limit)
+            .stream()
+        )
+    except FailedPrecondition:
+        docs = list(db.collection('products').limit(read_limit).stream())
 
     products: list[dict[str, Any]] = []
     for doc in docs:
