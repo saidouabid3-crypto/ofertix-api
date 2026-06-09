@@ -12,6 +12,17 @@ _MAX_IMAGES = 3
 _HEAD_TIMEOUT = 4.0
 
 
+def _candidate_urls(urls: Iterable[str], max_images: int) -> list[str]:
+    candidates = []
+    for url in urls:
+        clean = str(url or "").strip()
+        if clean.startswith("http") and clean not in candidates:
+            candidates.append(clean)
+        if len(candidates) >= max_images * 2:
+            break
+    return candidates
+
+
 async def _url_alive(url: str) -> bool:
     if not url or not url.startswith("http"):
         return False
@@ -27,14 +38,7 @@ async def _url_alive(url: str) -> bool:
 
 
 async def filter_valid_images(urls: Iterable[str], *, max_images: int = _MAX_IMAGES) -> list[str]:
-    candidates = []
-    for url in urls:
-        clean = str(url or "").strip()
-        if clean.startswith("http") and clean not in candidates:
-            candidates.append(clean)
-        if len(candidates) >= max_images * 2:
-            break
-
+    candidates = _candidate_urls(urls, max_images)
     checks = await asyncio.gather(*[_url_alive(url) for url in candidates[: max_images * 2]])
     valid = [url for url, ok in zip(candidates, checks) if ok]
     return valid[:max_images]
@@ -42,8 +46,11 @@ async def filter_valid_images(urls: Iterable[str], *, max_images: int = _MAX_IMA
 
 def filter_valid_images_sync(urls: Iterable[str], *, max_images: int = _MAX_IMAGES) -> list[str]:
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(filter_valid_images(urls, max_images=max_images))
 
-    return loop.run_until_complete(filter_valid_images(urls, max_images=max_images))
+    # A synchronous normalizer can run inside an async request handler. Starting
+    # or blocking that active loop is invalid, so retain sanitized URLs and let
+    # the dedicated async validator handle network checks where required.
+    return _candidate_urls(urls, max_images)[:max_images]

@@ -85,6 +85,9 @@ def normalize_item_market_fields(item: dict, fallback_country: str = "es") -> di
     ships_to = _list(item.get("shipsTo") or item.get("ships_to"))
 
     if country == "global":
+        item["isExplicitlyGlobal"] = bool(
+            item.get("isExplicitlyGlobal") is True or available or ships_to
+        )
         item["availableCountries"] = [c for c in available if c in SUPPORTED_MARKETS]
         if not item["availableCountries"]:
             item["availableCountries"] = list(SUPPORTED_MARKETS.keys())

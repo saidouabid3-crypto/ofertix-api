@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, Query
+from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import BaseModel
 
 from core.firebase import db
 from core.market_config import normalize_market, SUPPORTED_MARKETS
 from services.public_catalog_policy import evaluate_public_product, load_catalog_config
-from utils.market_filter import item_available_for_country, normalize_item_market_fields
-from utils.product_standard import normalize_product
+from services.public_product_service import (
+    is_usable_public_product,
+    prepare_public_product,
+)
 
 
 class ProductSearchRequest(BaseModel):
@@ -21,39 +24,14 @@ class ProductSearchRequest(BaseModel):
 router = APIRouter()
 
 
-def _is_blocked_store(item: dict) -> bool:
-    source = str(item.get("source") or "").strip().lower()
-    store = str(item.get("store") or "").strip().lower()
-    return source == "aliexpress" or "aliexpress" in store or store.startswith("ae-")
-
-
-def _usable(item: dict, market: str) -> bool:
-    if _is_blocked_store(item):
-        return False
-    if item.get("isExpired") is True:
-        return False
-    status = str(item.get("status", "active")).lower()
-    if status not in {"active", "approved", "published"}:
-        return False
-    if item.get("visibleToUsers") is False:
-        return False
-    if not item.get("image") and not item.get("mainImage"):
-        return False
-    if float(item.get("newPrice") or item.get("price") or 0) <= 0:
-        return False
-    if not item_available_for_country(item, market):
-        return False
-    if str(item.get("categoryGroup") or item.get("category")).lower() == "kitchen":
-        hay = f"{item.get('name', '')} {item.get('description', '')}".lower()
-        negatives = ["shoe", "sneaker", "ring", "jewelry", "earring", "necklace", "watch", "phone", "dress", "pants", "bag"]
-        if any(n in hay for n in negatives):
-            return False
-    return True
-
-
 def _stream_products(read_limit: int) -> list[dict]:
     try:
-        docs = db.collection("products").where("visibleToUsers", "==", True).limit(read_limit).stream()
+        docs = (
+            db.collection("products")
+            .where(filter=FieldFilter("visibleToUsers", "==", True))
+            .limit(read_limit)
+            .stream()
+        )
     except Exception:
         docs = db.collection("products").limit(read_limit).stream()
     return [{"id": doc.id, **(doc.to_dict() or {})} for doc in docs]
@@ -82,11 +60,8 @@ async def get_products(
     wanted_store = (store or "").strip().lower()
 
     for raw in raw_docs:
-        item = normalize_product(
-            normalize_item_market_fields(raw, fallback_country=market),
-            fallback_country=market,
-        )
-        if not _usable(item, market):
+        item = prepare_public_product(raw, market)
+        if not is_usable_public_product(item, market):
             continue
         if wanted_category and wanted_category not in str(item.get("categoryGroup") or item.get("category") or "").lower():
             continue
@@ -128,11 +103,8 @@ async def get_product_detail(product_id: str, country: str = "es"):
         doc = await asyncio.to_thread(db.collection("products").document(product_id).get)
         if doc.exists:
             raw = {"id": doc.id, **(doc.to_dict() or {})}
-            item = normalize_product(
-                normalize_item_market_fields(raw, fallback_country=market),
-                fallback_country=market,
-            )
-            if _usable(item, market):
+            item = prepare_public_product(raw, market)
+            if is_usable_public_product(item, market):
                 return {
                     "ok": True,
                     "country": market,
@@ -149,11 +121,8 @@ async def get_product_detail(product_id: str, country: str = "es"):
     for raw in raw_docs:
         if str(raw.get("id") or "") != product_id:
             continue
-        item = normalize_product(
-            normalize_item_market_fields(raw, fallback_country=market),
-            fallback_country=market,
-        )
-        if not _usable(item, market):
+        item = prepare_public_product(raw, market)
+        if not is_usable_public_product(item, market):
             break
         return {
             "ok": True,
@@ -185,11 +154,8 @@ async def search_products(payload: ProductSearchRequest):
     seen: set[str] = set()
 
     for raw in raw_docs:
-        item = normalize_product(
-            normalize_item_market_fields(raw, fallback_country=market),
-            fallback_country=market,
-        )
-        if not _usable(item, market):
+        item = prepare_public_product(raw, market)
+        if not is_usable_public_product(item, market):
             continue
         if wanted_category and wanted_category not in str(
             item.get("categoryGroup") or item.get("category") or ""

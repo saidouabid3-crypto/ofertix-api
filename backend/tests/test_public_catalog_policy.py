@@ -88,6 +88,19 @@ def test_safe_defaults_keep_all_hide_flags_disabled():
     assert _DEFAULT_CONFIG['hideNeedsReview'] is False
 
 
+def test_rank_score_accepts_currency_formatted_prices():
+    score = compute_rank_score(
+        {
+            'qualityScore': 80,
+            'newPrice': '€171.23',
+            'affiliateUrl': 'https://example.com/offer',
+        },
+        _config(),
+    )
+
+    assert score > 0
+
+
 def test_needs_review_demotion_can_be_disabled():
     product = _needs_review_product()
 

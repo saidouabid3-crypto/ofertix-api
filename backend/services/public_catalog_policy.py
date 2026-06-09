@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -30,6 +31,28 @@ _config_cache_ts: float = 0.0
 _CONFIG_TTL = 60.0
 
 _QUARANTINED = {'quarantined', 'blocked', 'rejected', 'hidden'}
+
+
+def _number(value: Any, default: float = 0.0) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if value is None:
+        return default
+
+    raw = re.sub(r'[^0-9,.\-]', '', str(value).strip())
+    if not raw:
+        return default
+    if ',' in raw and '.' in raw:
+        if raw.rfind(',') > raw.rfind('.'):
+            raw = raw.replace('.', '').replace(',', '.')
+        else:
+            raw = raw.replace(',', '')
+    elif ',' in raw:
+        raw = raw.replace(',', '.')
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
 
 
 def load_catalog_config() -> dict[str, Any]:
@@ -72,14 +95,14 @@ def compute_rank_score(
 ) -> float:
     """Compute a public-facing rank score 0–100 from trust/quality fields."""
     effective_config = {**_DEFAULT_CONFIG, **(config or {})}
-    base = float(product.get('catalogRankScore') or product.get('qualityScore') or 50)
+    base = _number(product.get('catalogRankScore') or product.get('qualityScore'), 50)
     score = max(0.0, min(100.0, base))
 
     trust = str(product.get('trustStatus') or '').lower()
     flags = {str(f).lower() for f in (product.get('qualityFlags') or [])}
-    src = float(product.get('sourceTrustScoreAtImport') or 0)
-    quality = float(product.get('qualityScore') or 0)
-    price = float(product.get('newPrice') or product.get('price') or 0)
+    src = _number(product.get('sourceTrustScoreAtImport'))
+    quality = _number(product.get('qualityScore'))
+    price = _number(product.get('newPrice') or product.get('price'))
     images = product.get('images') or []
     link = str(product.get('affiliateUrl') or product.get('productUrl') or '').strip()
     risk = str(product.get('riskLevel') or '').lower()
@@ -175,7 +198,7 @@ def evaluate_public_product(
     if config.get('hideMissingPrice') and (
         'missing_price' in flags
         or price_conf == 'missing'
-        or float(product.get('newPrice') or 0) <= 0
+        or _number(product.get('newPrice')) <= 0
     ):
         return _hide('missing_price')
 
@@ -229,7 +252,7 @@ def public_catalog_preview(limit: int = 500) -> dict[str, Any]:
             trust = str(data.get('trustStatus') or '').lower()
             admission = str(data.get('admissionStatus') or '').lower()
             flags = {str(f).lower() for f in (data.get('qualityFlags') or [])}
-            price = float(data.get('newPrice') or 0)
+            price = _number(data.get('newPrice'))
             price_conf = str(data.get('priceConfidence') or '').lower()
             store = str(data.get('store') or data.get('source') or '')[:40]
 
