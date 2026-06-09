@@ -25,15 +25,21 @@ router = APIRouter()
 
 
 def _stream_products(read_limit: int) -> list[dict]:
+    # Firestore .stream() returns a lazy generator; exceptions from the actual
+    # network call fire during iteration, not at .stream() time. Force-exhaust
+    # inside try/except so any auth/quota error is caught cleanly.
     try:
-        docs = (
+        docs = list(
             db.collection("products")
             .where(filter=FieldFilter("visibleToUsers", "==", True))
             .limit(read_limit)
             .stream()
         )
     except Exception:
-        docs = db.collection("products").limit(read_limit).stream()
+        try:
+            docs = list(db.collection("products").limit(read_limit).stream())
+        except Exception:
+            return []
     return [{"id": doc.id, **(doc.to_dict() or {})} for doc in docs]
 
 
