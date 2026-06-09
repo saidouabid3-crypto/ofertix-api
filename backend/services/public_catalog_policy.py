@@ -11,13 +11,14 @@ from core.firebase import db
 _DEFAULT_CONFIG: dict[str, Any] = {
     'publicFilteringEnabled': False,
     'smartRankingEnabled': True,
-    'hideQuarantined': True,
-    'hideHiddenDuplicates': True,
-    'hideRejected': True,
-    'hideExplicitPublicInvisible': True,
+    'hideQuarantined': False,
+    'hideHiddenDuplicates': False,
+    'hideRejected': False,
+    'hideExplicitPublicInvisible': False,
     'hideMissingLink': False,
     'hideMissingImage': False,
     'hideMissingPrice': False,
+    'hideNeedsReview': False,
     'demoteNeedsReview': True,
     'demoteLimitedInfo': True,
     'strictMode': False,
@@ -65,8 +66,12 @@ def invalidate_config_cache() -> None:
 
 # ─── ranking ──────────────────────────────────────────────────────────────────
 
-def compute_rank_score(product: dict[str, Any]) -> float:
+def compute_rank_score(
+    product: dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> float:
     """Compute a public-facing rank score 0–100 from trust/quality fields."""
+    effective_config = {**_DEFAULT_CONFIG, **(config or {})}
     base = float(product.get('catalogRankScore') or product.get('qualityScore') or 50)
     score = max(0.0, min(100.0, base))
 
@@ -93,15 +98,18 @@ def compute_rank_score(product: dict[str, Any]) -> float:
     if link.startswith('http'):
         score += 5
 
-    if flags & {'missing_price', 'suspicious_price', 'missing_currency'}:
-        score -= 30
-    if flags & {'missing_link', 'invalid_link'}:
-        score -= 25
-    if 'missing_image' in flags:
-        score -= 20
+    if effective_config.get('demoteLimitedInfo', True):
+        if flags & {'missing_price', 'suspicious_price', 'missing_currency'}:
+            score -= 30
+        if flags & {'missing_link', 'invalid_link'}:
+            score -= 25
+        if 'missing_image' in flags:
+            score -= 20
     if 'duplicate_candidate' in flags:
         score -= 20
-    if trust == 'needs_review' or admission == 'needs_review':
+    if effective_config.get('demoteNeedsReview', True) and (
+        trust == 'needs_review' or admission == 'needs_review'
+    ):
         score -= 15
     if risk == 'medium':
         score -= 15
@@ -125,7 +133,7 @@ def evaluate_public_product(
 
     When publicFilteringEnabled=False all products are visible (safe default).
     """
-    rank = compute_rank_score(product)
+    rank = compute_rank_score(product, config)
     base = {'visible': True, 'hiddenReason': None, 'rankScore': rank}
 
     if not config.get('publicFilteringEnabled', False):
@@ -143,7 +151,7 @@ def evaluate_public_product(
         return {**base, 'visible': False, 'hiddenReason': reason}
 
     if config.get('hideExplicitPublicInvisible') and product.get('publicVisible') is False:
-        return _hide('explicit_public_invisible')
+        return _hide('public_invisible')
 
     if config.get('hideQuarantined') and trust in {'quarantined', 'blocked'}:
         return _hide('quarantined')
@@ -171,6 +179,13 @@ def evaluate_public_product(
     ):
         return _hide('missing_price')
 
+    # needs_review only hidden when BOTH strictMode AND hideNeedsReview are true
+    if (
+        config.get('strictMode') and config.get('hideNeedsReview')
+        and (trust == 'needs_review' or admission == 'needs_review')
+    ):
+        return _hide('needs_review_hidden_strict')
+
     return base
 
 
@@ -185,16 +200,11 @@ def public_catalog_preview(limit: int = 500) -> dict[str, Any]:
     generated_at = datetime.now(timezone.utc).isoformat()
 
     counts: dict[str, int] = {
-        'total': 0,
-        'visible': 0,
-        'hidden': 0,
-        'trusted': 0,
-        'needsReview': 0,
-        'priceReview': 0,
-        'missingLink': 0,
-        'missingImage': 0,
-        'hiddenDuplicate': 0,
-        'quarantined': 0,
+        'total': 0, 'visible': 0, 'hidden': 0,
+        'trusted': 0, 'needsReview': 0, 'priceReview': 0,
+        'missingLink': 0, 'missingImage': 0, 'missingPrice': 0,
+        'hiddenDuplicate': 0, 'quarantined': 0, 'rejected': 0,
+        'publicInvisible': 0, 'strictHiddenNeedsReview': 0,
     }
     hidden_by_reason: dict[str, int] = {}
     visible_samples: list[dict] = []
@@ -217,19 +227,27 @@ def public_catalog_preview(limit: int = 500) -> dict[str, Any]:
             counts['total'] += 1
 
             trust = str(data.get('trustStatus') or '').lower()
+            admission = str(data.get('admissionStatus') or '').lower()
             flags = {str(f).lower() for f in (data.get('qualityFlags') or [])}
             price = float(data.get('newPrice') or 0)
             price_conf = str(data.get('priceConfidence') or '').lower()
+            store = str(data.get('store') or data.get('source') or '')[:40]
 
-            # aggregate quality counters (independent of filtering)
+            # aggregate quality counters (independent of filtering state)
             if trust == 'trusted':
                 counts['trusted'] += 1
-            if trust == 'needs_review':
+            if trust == 'needs_review' or admission == 'needs_review':
                 counts['needsReview'] += 1
             if trust == 'quarantined':
                 counts['quarantined'] += 1
+            if trust == 'rejected' or admission == 'rejected':
+                counts['rejected'] += 1
+            if data.get('publicVisible') is False:
+                counts['publicInvisible'] += 1
             if flags & {'missing_price', 'suspicious_price', 'missing_currency'} or price <= 0 or price_conf == 'missing':
                 counts['priceReview'] += 1
+            if 'missing_price' in flags or price <= 0:
+                counts['missingPrice'] += 1
             if flags & {'missing_link', 'invalid_link'}:
                 counts['missingLink'] += 1
             if 'missing_image' in flags:
@@ -241,13 +259,32 @@ def public_catalog_preview(limit: int = 500) -> dict[str, Any]:
             if decision['visible']:
                 counts['visible'] += 1
                 if len(visible_samples) < 10:
-                    visible_samples.append({'id': doc.id, 'name': str(data.get('name') or '')[:60], 'rankScore': decision['rankScore']})
+                    visible_samples.append({
+                        'id': doc.id,
+                        'name': str(data.get('name') or '')[:60],
+                        'store': store,
+                        'publicRankScore': decision['rankScore'],
+                        'trustStatus': trust,
+                        'admissionStatus': admission,
+                        'priceConfidence': price_conf,
+                        'hiddenReason': decision.get('hiddenReason'),
+                    })
             else:
                 counts['hidden'] += 1
                 reason = decision.get('hiddenReason') or 'unknown'
                 hidden_by_reason[reason] = hidden_by_reason.get(reason, 0) + 1
+                if reason == 'needs_review_hidden_strict':
+                    counts['strictHiddenNeedsReview'] += 1
                 if len(hidden_samples) < 10:
-                    hidden_samples.append({'id': doc.id, 'name': str(data.get('name') or '')[:60], 'hiddenReason': reason})
+                    hidden_samples.append({
+                        'id': doc.id,
+                        'name': str(data.get('name') or '')[:60],
+                        'store': store,
+                        'hiddenReason': reason,
+                        'trustStatus': trust,
+                        'admissionStatus': admission,
+                        'qualityFlags': list(flags)[:5],
+                    })
         except Exception:
             continue
 
@@ -260,11 +297,15 @@ def public_catalog_preview(limit: int = 500) -> dict[str, Any]:
         'trustedCount': counts['trusted'],
         'needsReviewCount': counts['needsReview'],
         'quarantinedCount': counts['quarantined'],
+        'rejectedCount': counts['rejected'],
+        'publicInvisibleCount': counts['publicInvisible'],
         'priceReviewCount': counts['priceReview'],
+        'missingPriceCount': counts['missingPrice'],
         'missingLinkCount': counts['missingLink'],
         'missingImageCount': counts['missingImage'],
         'hiddenDuplicateCount': counts['hiddenDuplicate'],
-        'visibleSamples': visible_samples,
+        'strictHiddenNeedsReviewCount': counts['strictHiddenNeedsReview'],
+        'topVisibleSamples': visible_samples,
         'hiddenSamples': hidden_samples,
         'generatedAt': generated_at,
     }

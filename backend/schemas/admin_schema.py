@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional
 
 
@@ -422,6 +422,8 @@ class AdminActionRequest(BaseModel):
 # ─── Catalog governance ───────────────────────────────────────────────────────
 
 class CatalogConfigUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
     publicFilteringEnabled: Optional[bool] = None
     smartRankingEnabled: Optional[bool] = None
     hideQuarantined: Optional[bool] = None
@@ -431,6 +433,7 @@ class CatalogConfigUpdateRequest(BaseModel):
     hideMissingLink: Optional[bool] = None
     hideMissingImage: Optional[bool] = None
     hideMissingPrice: Optional[bool] = None
+    hideNeedsReview: Optional[bool] = None
     demoteNeedsReview: Optional[bool] = None
     demoteLimitedInfo: Optional[bool] = None
     strictMode: Optional[bool] = None

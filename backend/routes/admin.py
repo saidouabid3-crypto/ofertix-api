@@ -399,7 +399,7 @@ async def update_catalog_public_config(
 ):
     """
     Update app_config/catalog_governance fields.
-    Only known boolean keys are accepted; unknown keys are silently ignored.
+    Only known boolean keys are accepted; unknown keys are rejected by the schema.
     """
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
     return await asyncio.to_thread(admin_service.update_catalog_config, updates, current_user)
