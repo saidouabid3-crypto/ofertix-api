@@ -1333,24 +1333,70 @@ class AdminRepository:
                     'source': data.get('source'),
                     'store': data.get('store'),
                     'domain': data.get('domain'),
-                    'sourceTrustScore': int(data.get('sourceTrustScore') or 100),
-                    'status': data.get('status') or 'ok',
-                    'totalImported': int(data.get('totalImported') or 0),
+                    'sourceTrustScore': int(
+                        data.get('trustScore')
+                        if data.get('trustScore') is not None
+                        else data.get('sourceTrustScore') or 100
+                    ),
+                    'status': {
+                        'strong': 'trusted',
+                        'stable': 'ok',
+                        'watch': 'watch',
+                        'weak': 'risky',
+                    }.get(
+                        str(data.get('trustLabel') or '').lower(),
+                        data.get('status') or 'ok',
+                    ),
+                    'totalImported': int(
+                        data.get('totalProducts')
+                        if data.get('totalProducts') is not None
+                        else data.get('totalImported') or 0
+                    ),
                     'totalFailed': int(data.get('totalFailed') or 0),
                     'totalUpdated': int(data.get('totalUpdated') or 0),
-                    'totalDuplicates': int(data.get('totalDuplicates') or 0),
-                    'totalMissingImage': int(data.get('totalMissingImage') or 0),
-                    'totalMissingLink': int(data.get('totalMissingLink') or 0),
-                    'totalMissingPrice': int(data.get('totalMissingPrice') or 0),
-                    'totalQuarantined': int(data.get('totalQuarantined') or 0),
-                    'totalNeedsReview': int(data.get('totalNeedsReview') or 0),
+                    'totalDuplicates': int(
+                        data.get('hiddenDuplicateCount')
+                        if data.get('hiddenDuplicateCount') is not None
+                        else data.get('totalDuplicates') or 0
+                    ),
+                    'totalMissingImage': int(
+                        data.get('missingImageCount')
+                        if data.get('missingImageCount') is not None
+                        else data.get('totalMissingImage') or 0
+                    ),
+                    'totalMissingLink': int(
+                        data.get('missingLinkCount')
+                        if data.get('missingLinkCount') is not None
+                        else data.get('totalMissingLink') or 0
+                    ),
+                    'totalMissingPrice': int(
+                        data.get('missingPriceCount')
+                        if data.get('missingPriceCount') is not None
+                        else data.get('totalMissingPrice') or 0
+                    ),
+                    'totalQuarantined': int(
+                        data.get('quarantinedCount')
+                        if data.get('quarantinedCount') is not None
+                        else data.get('totalQuarantined') or 0
+                    ),
+                    'totalNeedsReview': int(
+                        data.get('needsReviewCount')
+                        if data.get('needsReviewCount') is not None
+                        else data.get('totalNeedsReview') or 0
+                    ),
                     'successfulBatches': int(data.get('successfulBatches') or 0),
                     'failedBatches': int(data.get('failedBatches') or 0),
-                    'lastImportAt': _ts(data.get('lastImportAt')),
+                    'lastImportAt': _ts(
+                        data.get('lastImportedAt')
+                        or data.get('lastImportAt')
+                    ),
                     'lastSuccessfulImportAt': _ts(data.get('lastSuccessfulImportAt')),
                     'lastFailedImportAt': _ts(data.get('lastFailedImportAt')),
                     'reasons': list(data.get('reasons') or []),
-                    'updatedAt': _ts(data.get('updatedAt')),
+                    'updatedAt': _ts(
+                        data.get('recalibratedAt')
+                        or data.get('updatedAt')
+                    ),
                 })
         except Exception:
             pass

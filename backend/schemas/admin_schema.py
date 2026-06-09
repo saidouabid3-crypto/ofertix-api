@@ -437,3 +437,10 @@ class CatalogConfigUpdateRequest(BaseModel):
     demoteNeedsReview: Optional[bool] = None
     demoteLimitedInfo: Optional[bool] = None
     strictMode: Optional[bool] = None
+
+
+class SourceTrustRecalibrationRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    sourceKey: Optional[str] = None
+    dryRun: bool = True

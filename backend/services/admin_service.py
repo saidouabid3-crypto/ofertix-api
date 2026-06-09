@@ -177,5 +177,22 @@ class AdminService:
         from services.public_catalog_policy import update_catalog_config
         return update_catalog_config(updates, admin['uid'], admin.get('email', ''))
 
+    def catalog_health(self) -> Dict[str, Any]:
+        from services.catalog_health_service import get_catalog_health
+        return get_catalog_health()
+
+    def recalibrate_source_trust(
+        self,
+        source_key: Optional[str],
+        dry_run: bool,
+        admin: dict,
+    ) -> Dict[str, Any]:
+        from services.catalog_health_service import recalibrate_source_trust
+        return recalibrate_source_trust(
+            source_key=source_key,
+            dry_run=dry_run,
+            admin_uid=admin['uid'],
+        )
+
 
 admin_service = AdminService()

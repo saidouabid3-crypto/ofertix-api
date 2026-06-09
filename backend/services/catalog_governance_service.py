@@ -82,8 +82,18 @@ class GovernedImportSession:
             snap = db.collection('source_trust').document(_trust_doc_id).get()
             if snap.exists:
                 data = snap.to_dict() or {}
-                self._source_trust_score_before = int(data.get('sourceTrustScore', 100))
-                self._source_trust_status_before = str(data.get('status', 'ok'))
+                self._source_trust_score_before = int(
+                    data.get('trustScore')
+                    if data.get('trustScore') is not None
+                    else data.get('sourceTrustScore', 100)
+                )
+                calibrated_label = str(data.get('trustLabel') or '').lower()
+                self._source_trust_status_before = {
+                    'strong': 'trusted',
+                    'stable': 'ok',
+                    'watch': 'watch',
+                    'weak': 'risky',
+                }.get(calibrated_label, str(data.get('status', 'ok')))
         except Exception:
             pass
 

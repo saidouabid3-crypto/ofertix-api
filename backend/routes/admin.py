@@ -27,6 +27,7 @@ from schemas.admin_schema import (
     ImportBatchActionRequest,
     ProductTrustScanRequest,
     ProductTrustScanSummary,
+    SourceTrustRecalibrationRequest,
 )
 from services.admin_service import admin_service
 
@@ -403,3 +404,23 @@ async def update_catalog_public_config(
     """
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
     return await asyncio.to_thread(admin_service.update_catalog_config, updates, current_user)
+
+
+@router.get('/catalog/health')
+async def catalog_health(current_user: dict = Depends(require_admin)):
+    """Read-only catalog health and calibrated source trust preview."""
+    return await asyncio.to_thread(admin_service.catalog_health)
+
+
+@router.post('/catalog/recalibrate-source-trust')
+async def recalibrate_catalog_source_trust(
+    body: SourceTrustRecalibrationRequest = SourceTrustRecalibrationRequest(),
+    current_user: dict = Depends(require_admin),
+):
+    """Calculate source trust, writing only source_trust docs when applied."""
+    return await asyncio.to_thread(
+        admin_service.recalibrate_source_trust,
+        body.sourceKey,
+        body.dryRun,
+        current_user,
+    )
