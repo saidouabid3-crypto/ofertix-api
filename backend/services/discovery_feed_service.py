@@ -367,8 +367,33 @@ def build_discovery_feed(
         'freshArrivals': _take_pool(fresh, used, 8),
         'trendingNow': _take_pool(hot_or_trending, used, 8),
         'notSeenRecently': _take_pool(not_seen, used, 10),
-        'forYouToday': _take_pool(diverse, used, 12),
+        # forYouToday uses its own set so it always has products when the catalog is non-empty.
+        # The shared `used` set above can exhaust all IDs in a small catalog before reaching
+        # this section; deduplication against other sections is best-effort, not a hard rule.
+        'forYouToday': _take_pool(diverse, set(), 12),
     }
+
+    # Safety fallback: if forYouToday is still empty (e.g. diverse itself was empty),
+    # fill from verifiedDeals → bestDiscountToday → hotDeals → globalOnline → ranked.
+    if not sections['forYouToday']:
+        for pool in (
+            sections['verifiedDeals'],
+            sections['bestDiscountToday'],
+            sections['hotDeals'],
+            sections['globalOnline'],
+            ranked,
+        ):
+            if pool:
+                # Deduplicate within forYouToday only
+                seen_fyt: set[str] = set()
+                for p in pool:
+                    key = str(p.get('id') or p.get('fingerprint') or p.get('name'))
+                    if key not in seen_fyt:
+                        seen_fyt.add(key)
+                        sections['forYouToday'].append(p)
+                    if len(sections['forYouToday']) >= 12:
+                        break
+                break
 
     categories: dict[str, int] = {}
     stores: dict[str, int] = {}

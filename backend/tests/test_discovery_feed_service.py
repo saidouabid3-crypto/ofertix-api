@@ -542,3 +542,49 @@ class TestBuildDiscoveryFeed:
         called_limit = limit_calls[0][0][0]
         assert called_limit > 0, "Firestore query must have a positive limit"
         assert called_limit <= 1000, "Firestore limit must be bounded (≤1000)"
+
+    def test_for_you_today_non_empty_when_products_exist(self, mock_firestore):
+        """
+        Regression test for Batch 14A-B:
+        forYouToday must be populated whenever the catalog has products,
+        even if every product was already claimed by the other discovery sections.
+        """
+        feed = build_discovery_feed(country='es', limit=20, day_seed=SEED, variant='A')
+        assert feed['count'] > 0, "catalog must be non-empty for this test"
+        assert len(feed['sections']['forYouToday']) > 0, (
+            "forYouToday must never be empty when the catalog has products"
+        )
+
+    def test_for_you_today_no_duplicates(self, mock_firestore):
+        """forYouToday must not contain duplicate product IDs."""
+        feed = build_discovery_feed(country='es', limit=20, day_seed=SEED, variant='A')
+        ids = [p['id'] for p in feed['sections']['forYouToday']]
+        assert len(ids) == len(set(ids)), "forYouToday contains duplicate product IDs"
+
+    def test_for_you_today_capped_at_12(self, mock_firestore):
+        """forYouToday must not exceed 12 products."""
+        feed = build_discovery_feed(country='es', limit=40, day_seed=SEED, variant='A')
+        assert len(feed['sections']['forYouToday']) <= 12
+
+    def test_for_you_today_fallback_excludes_quarantined(self, mock_firestore):
+        """forYouToday fallback must not include quarantined/rejected products."""
+        quarantined = _product(id='qfyt', trust='quarantined', countries=['es'])
+        docs = [_make_doc(p) for p in CATALOG_30] + [_make_doc(quarantined)]
+        mock_firestore.collection.return_value.where.return_value.limit.return_value.stream.return_value = iter(docs)
+        feed = build_discovery_feed(country='es', limit=40, day_seed=SEED, variant='A')
+        fyt_ids = [p['id'] for p in feed['sections']['forYouToday']]
+        assert 'qfyt' not in fyt_ids
+
+    def test_for_you_today_populated_with_tiny_catalog(self, mock_firestore):
+        """
+        forYouToday must be populated even with a tiny catalog of 3 products
+        where other sections would consume all available product IDs.
+        """
+        tiny = [_product(id=f'tiny{i}', store=f'Shop{i}', category=f'Cat{i}',
+                         countries=['es']) for i in range(3)]
+        docs = [_make_doc(p) for p in tiny]
+        mock_firestore.collection.return_value.where.return_value.limit.return_value.stream.return_value = iter(docs)
+        feed = build_discovery_feed(country='es', limit=20, day_seed=SEED, variant='A')
+        assert len(feed['sections']['forYouToday']) > 0, (
+            "forYouToday must be populated even with a tiny 3-product catalog"
+        )
