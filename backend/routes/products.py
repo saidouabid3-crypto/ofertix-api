@@ -20,6 +20,7 @@ from services.public_product_service import (
     is_usable_public_product,
     prepare_public_product,
 )
+from services.smart_search_service import rank_search_results
 
 
 class ProductSearchRequest(BaseModel):
@@ -27,6 +28,13 @@ class ProductSearchRequest(BaseModel):
     country: str = "es"
     category: str | None = None
     limit: int = 30
+    # New optional fields (Batch 14B) — all backward-compatible
+    store: str | None = None
+    minPrice: float | None = None
+    maxPrice: float | None = None
+    minDiscount: int | None = None
+    trustedOnly: bool = False
+    sort: str = "smart"
 
 router = APIRouter()
 
@@ -185,16 +193,26 @@ async def get_product_detail(product_id: str, country: str = "es"):
 @router.post("/api/products/search")
 async def search_products(payload: ProductSearchRequest):
     market = normalize_market(payload.country)
-    q = payload.query.strip().lower()
+    q = payload.query.strip()
     wanted_category = (payload.category or "").strip().lower()
+    wanted_store = (payload.store or "").strip().lower()
     limit = max(1, min(payload.limit, 200))
-    read_limit = min(limit * 8, 800)
+    read_limit = min(max(limit * 8, 300), 800)
+    sort_mode = payload.sort if payload.sort in (
+        "smart", "discount_desc", "price_asc", "price_desc", "newest", "trusted"
+    ) else "smart"
 
     key = catalog_cache.build_key(
         "search",
         country=market,
-        q=q or None,
+        q=q.lower() or None,
         category=wanted_category or None,
+        store=wanted_store or None,
+        min_price=round(payload.minPrice, 2) if payload.minPrice else None,
+        max_price=round(payload.maxPrice, 2) if payload.maxPrice else None,
+        min_discount=payload.minDiscount,
+        trusted_only=payload.trustedOnly or None,
+        sort=sort_mode if sort_mode != "smart" else None,
         limit=limit,
     )
 
@@ -204,46 +222,51 @@ async def search_products(payload: ProductSearchRequest):
             asyncio.to_thread(_stream_products, read_limit),
         )
 
-        results: list[dict] = []
-        seen: set[str] = set()
+        # Build public candidate pool (same eligibility as /products)
+        candidates: list[dict] = []
+        seen_fp: set[str] = set()
 
         for raw in raw_docs:
             item = prepare_public_product(raw, market)
             if not is_usable_public_product(item, market):
                 continue
-            if wanted_category and wanted_category not in str(
-                item.get("categoryGroup") or item.get("category") or ""
-            ).lower():
-                continue
-            if q:
-                haystack = " ".join(
-                    str(item.get(k) or "")
-                    for k in ("name", "fullTitle", "description", "category", "store")
-                ).lower()
-                if q not in haystack:
-                    continue
             fp = (
                 item.get("fingerprint")
                 or f"{item.get('store')}|{item.get('name')}|{item.get('newPrice')}"
             )
-            if fp in seen:
+            if fp in seen_fp:
                 continue
-            seen.add(fp)
+            seen_fp.add(fp)
 
             decision = evaluate_public_product(item, config)
             if not decision["visible"]:
                 continue
             item["publicRankScore"] = decision["rankScore"]
-            results.append(item)
+            candidates.append(item)
 
-        if config.get("smartRankingEnabled", True):
-            results.sort(key=lambda x: x.get("publicRankScore", 50), reverse=True)
+        # Smart search ranking engine
+        smart = rank_search_results(
+            candidates,
+            query=q,
+            category=wanted_category,
+            store=wanted_store,
+            min_price=payload.minPrice,
+            max_price=payload.maxPrice,
+            min_discount=payload.minDiscount,
+            trusted_only=payload.trustedOnly,
+            sort_mode=sort_mode,
+            limit=limit,
+        )
 
         return {
             "country": market,
             "currency": SUPPORTED_MARKETS[market]["currency"],
-            "count": min(len(results), limit),
-            "products": results[:limit],
+            "count": len(smart["ranked_products"]),
+            "products": smart["ranked_products"],
+            # New enrichment fields (non-breaking for old Flutter clients)
+            "suggestions": smart["suggestions"],
+            "detectedIntent": smart["detectedIntent"],
+            "filters": smart["filters"],
         }
 
     return await catalog_cache.get_or_load(
