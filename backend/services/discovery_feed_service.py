@@ -9,11 +9,9 @@ from google.api_core.exceptions import FailedPrecondition
 
 from core.firebase import db
 from core.market_config import SUPPORTED_MARKETS, normalize_market
-from utils.market_filter import item_available_for_country, normalize_item_market_fields
-from utils.product_standard import normalize_product
+from services.public_product_service import is_usable_public_product, prepare_public_product
 
 _QUARANTINED = {'quarantined', 'blocked', 'rejected', 'hidden'}
-_BLOCKED_SOURCES = {'aliexpress'}
 
 
 def _number(val: Any, default: float = 0.0) -> float:
@@ -26,32 +24,6 @@ def _number(val: Any, default: float = 0.0) -> float:
         return float(raw)
     except (ValueError, TypeError):
         return default
-
-
-def _is_blocked(item: dict[str, Any]) -> bool:
-    src = str(item.get('source') or '').strip().lower()
-    store = str(item.get('store') or '').strip().lower()
-    return src in _BLOCKED_SOURCES or any(b in store for b in _BLOCKED_SOURCES)
-
-
-def _is_usable(item: dict[str, Any], market: str) -> bool:
-    if _is_blocked(item):
-        return False
-    trust = str(item.get('trustStatus', '')).lower()
-    if trust in _QUARANTINED:
-        return False
-    status = str(item.get('status', 'active')).lower()
-    if status not in {'active', 'approved', 'published'}:
-        return False
-    if item.get('visibleToUsers') is False:
-        return False
-    if not item.get('image') and not item.get('mainImage'):
-        return False
-    if _number(item.get('newPrice') or item.get('price')) <= 0:
-        return False
-    if not item_available_for_country(item, market):
-        return False
-    return True
 
 
 def rotation_boost(product_id: str, seed: str) -> float:
@@ -251,7 +223,16 @@ def _take_pool(
 
 
 def _fetch_usable_products(market: str, read_limit: int) -> list[dict[str, Any]]:
-    """Fetch and normalize products from Firestore. Returns deduplicated usable list."""
+    """
+    Fetch and normalize products from Firestore using the same public eligibility
+    pipeline as /products, so global products and all status variants are treated
+    identically in both endpoints.
+
+    Key fix (Batch 14A-A): previously used normalize_product() directly, which
+    overwrites status/visibleToUsers on low-confidence products. prepare_public_product()
+    restores the original Firestore values for those fields after normalization, matching
+    the /products behavior.
+    """
     try:
         docs = list(
             db.collection('products')
@@ -266,12 +247,19 @@ def _fetch_usable_products(market: str, read_limit: int) -> list[dict[str, Any]]
     for doc in docs:
         raw = doc.to_dict() or {}
         raw['id'] = doc.id
-        item = normalize_product(
-            normalize_item_market_fields(raw, fallback_country=market),
-            fallback_country=market,
-        )
-        if _is_usable(item, market):
-            products.append(item)
+
+        # Use the same normalization + eligibility path as /products
+        item = prepare_public_product(raw, market)
+        if not is_usable_public_product(item, market):
+            continue
+
+        # Discovery-layer safety: never show quarantined/rejected/hidden products
+        # regardless of publicFilteringEnabled setting.
+        trust = str(item.get('trustStatus') or '').lower()
+        if trust in _QUARANTINED:
+            continue
+
+        products.append(item)
 
     return _dedupe(products)
 
