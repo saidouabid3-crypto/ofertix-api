@@ -11,6 +11,7 @@ from services.smart_search_service import (
     _ALIAS_TO_GROUP,
     apply_filters,
     build_suggestions,
+    compute_intent_relevance,
     compute_match_score,
     compute_smart_rank,
     detect_intent,
@@ -334,6 +335,127 @@ class TestRankSearchResults:
         result = rank_search_results(catalog, query='telefono')
         assert result['detectedIntent']['category'] == 'phones'
 
+    def test_zapatillas_detects_shoes(self):
+        result = rank_search_results(self._make_catalog(), query='zapatillas')
+        assert result['detectedIntent']['category'] == 'shoes'
+
+    def test_shoe_ranks_above_jewelry_for_zapatillas(self):
+        jewelry = _product(
+            id='jewelry',
+            name='Fashion Pave Yellow Topaz Gemstone',
+            category='Jewelry',
+            public_rank=99,
+            quality=95,
+            discount=80,
+        )
+        shoe = _product(
+            id='shoe',
+            name='Zapatillas deportivas running',
+            category='Shoes',
+            public_rank=30,
+            quality=55,
+            discount=10,
+        )
+        result = rank_search_results(
+            [jewelry, shoe], query='zapatillas', trusted_only=True
+        )
+        assert result['ranked_products'][0]['id'] == 'shoe'
+
+    def test_high_discount_jewelry_cannot_outrank_shoe(self):
+        jewelry = _product(
+            id='jewelry',
+            name='Luxury gemstone ring',
+            category='Jewelry',
+            public_rank=100,
+            quality=100,
+            discount=90,
+            is_hot=True,
+            featured=True,
+        )
+        shoe = _product(
+            id='shoe',
+            name='Calzado casual',
+            category='Shoes',
+            public_rank=10,
+            quality=40,
+            discount=0,
+        )
+        result = rank_search_results([jewelry, shoe], query='zapatillas')
+        assert result['ranked_products'][0]['id'] == 'shoe'
+
+    def test_fashion_shoe_title_or_path_is_relevant(self):
+        fashion_shoe = _product(
+            id='fashion-shoe',
+            name='Sneakers urbanas',
+            category='Fashion',
+        )
+        fashion_shoe['categoryPath'] = 'Fashion > Shoes > Sneakers'
+        boost, relevant, mismatch = compute_intent_relevance(
+            fashion_shoe, detect_intent(['zapatillas'])
+        )
+        assert boost > 0
+        assert relevant is True
+        assert mismatch is False
+
+    def test_generic_fashion_is_demoted_for_shoes(self):
+        fashion = _product(
+            id='fashion',
+            name='Summer floral dress',
+            category='Fashion',
+            public_rank=95,
+            discount=70,
+        )
+        shoe = _product(
+            id='shoe',
+            name='Botas de senderismo',
+            category='Shoes',
+            public_rank=30,
+            discount=10,
+        )
+        result = rank_search_results([fashion, shoe], query='zapatillas')
+        assert result['ranked_products'][0]['id'] == 'shoe'
+        assert (
+            result['ranked_products'][0]['smartSearchScore']
+            > result['ranked_products'][1]['smartSearchScore']
+        )
+
+    def test_telefono_barato_keeps_phones_first(self):
+        phone = _product(
+            id='phone',
+            name='Smartphone Android economico',
+            category='Phones',
+            public_rank=35,
+            discount=15,
+        )
+        home = _product(
+            id='home',
+            name='Decoracion barata para casa',
+            category='Home',
+            public_rank=99,
+            discount=80,
+        )
+        result = rank_search_results([home, phone], query='telefono barato')
+        assert result['detectedIntent']['category'] == 'phones'
+        assert result['ranked_products'][0]['id'] == 'phone'
+
+    def test_no_relevant_products_keeps_broad_fallback(self):
+        catalog = [
+            _product(id='jewelry', name='Gemstone ring', category='Jewelry'),
+            _product(id='home', name='Kitchen lamp', category='Home'),
+        ]
+        result = rank_search_results(catalog, query='zapatillas', limit=10)
+        assert len(result['ranked_products']) == 2
+        assert {p['id'] for p in result['ranked_products']} == {'jewelry', 'home'}
+
+    def test_response_shape_unchanged_after_intent_ranking(self):
+        result = rank_search_results(
+            [_product(name='Zapatillas deportivas', category='Shoes')],
+            query='zapatillas',
+        )
+        assert set(result) == {
+            'ranked_products', 'suggestions', 'detectedIntent', 'filters'
+        }
+
     def test_returns_filters_facets(self):
         catalog = self._make_catalog()
         result = rank_search_results(catalog, query='product')
@@ -477,6 +599,13 @@ import os
 os.environ.setdefault("FIREBASE_REQUIRED", "false")
 
 from routes import products as product_routes
+
+
+@pytest.fixture(autouse=True)
+def _clear_route_cache_between_tests():
+    product_routes.catalog_cache.clear()
+    yield
+    product_routes.catalog_cache.clear()
 
 
 def test_search_route_preserves_old_response_shape(monkeypatch):

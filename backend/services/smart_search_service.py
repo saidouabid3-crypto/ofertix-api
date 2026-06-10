@@ -260,9 +260,14 @@ def _item_text_tokens(item: dict[str, Any]) -> list[str]:
     """Build a flat normalized token list from the product's searchable fields."""
     raw = ' '.join([
         str(item.get('name') or ''),
+        str(item.get('title') or ''),
         str(item.get('fullTitle') or ''),
         str(item.get('description') or ''),
-        str(item.get('categoryGroup') or item.get('category') or ''),
+        str(item.get('category') or ''),
+        str(item.get('normalizedCategory') or ''),
+        str(item.get('categoryGroup') or ''),
+        str(item.get('categoryName') or ''),
+        str(item.get('categoryPath') or ''),
         str(item.get('store') or ''),
         str(item.get('source') or ''),
     ])
@@ -285,12 +290,21 @@ def compute_match_score(
     item_tokens = _item_text_tokens(item)
     item_text_full = normalize_query(' '.join([
         str(item.get('name') or ''),
+        str(item.get('title') or ''),
         str(item.get('fullTitle') or ''),
         str(item.get('description') or ''),
-        str(item.get('categoryGroup') or item.get('category') or ''),
+        str(item.get('category') or ''),
+        str(item.get('normalizedCategory') or ''),
+        str(item.get('categoryGroup') or ''),
+        str(item.get('categoryName') or ''),
+        str(item.get('categoryPath') or ''),
         str(item.get('store') or ''),
     ]))
-    item_name_text = normalize_query(str(item.get('name') or '') + ' ' + str(item.get('fullTitle') or ''))
+    item_name_text = normalize_query(' '.join([
+        str(item.get('name') or ''),
+        str(item.get('title') or ''),
+        str(item.get('fullTitle') or ''),
+    ]))
 
     score = 0.0
     matched_tokens = 0
@@ -334,6 +348,104 @@ def compute_match_score(
     score *= coverage
 
     return round(min(100.0, score), 2)
+
+
+# ─── Intent relevance ─────────────────────────────────────────────────────────
+
+_CATEGORY_FIELDS = (
+    'category',
+    'normalizedCategory',
+    'categoryGroup',
+    'categoryName',
+    'categoryPath',
+    'sourceCategory',
+    'storeCategory',
+)
+
+_PRIMARY_CATEGORY_FIELDS = ('category', 'normalizedCategory', 'categoryGroup')
+_TITLE_FIELDS = ('name', 'title', 'fullTitle', 'productName')
+
+
+def _normalized_fields(item: dict[str, Any], fields: tuple[str, ...]) -> str:
+    return normalize_query(' '.join(str(item.get(field) or '') for field in fields))
+
+
+def _contains_intent_term(text: str, intent_group: str) -> bool:
+    if not text or intent_group not in SYNONYM_GROUPS:
+        return False
+    tokens = set(text.split())
+    for term in SYNONYM_GROUPS[intent_group] | {intent_group}:
+        normalized_term = normalize_query(term)
+        if not normalized_term:
+            continue
+        if ' ' in normalized_term:
+            if normalized_term in text:
+                return True
+        elif normalized_term in tokens:
+            return True
+    return False
+
+
+def _category_groups_in_text(text: str) -> set[str]:
+    return {
+        group
+        for group in SYNONYM_GROUPS
+        if _contains_intent_term(text, group)
+    }
+
+
+def compute_intent_relevance(
+    item: dict[str, Any],
+    intent: dict[str, Any],
+) -> tuple[float, bool, bool]:
+    """
+    Return (boost, is_relevant, has_clear_category_mismatch).
+
+    Category authority is intentionally separate from generic match/public rank
+    so a strong catalog score cannot hide an obvious intent mismatch.
+    """
+    intent_group = str(intent.get('category') or '')
+    if not intent_group or intent_group not in SYNONYM_GROUPS:
+        return 0.0, False, False
+
+    primary_category = _normalized_fields(item, _PRIMARY_CATEGORY_FIELDS)
+    category_text = _normalized_fields(item, _CATEGORY_FIELDS)
+    title_text = _normalized_fields(item, _TITLE_FIELDS)
+    description_text = normalize_query(str(item.get('description') or ''))
+
+    primary_match = _contains_intent_term(primary_category, intent_group)
+    category_match = _contains_intent_term(category_text, intent_group)
+    title_match = _contains_intent_term(title_text, intent_group)
+    description_match = _contains_intent_term(description_text, intent_group)
+
+    # Fashion is only relevant to shoes when the product itself or its path
+    # explicitly says it is footwear.
+    category_groups = _category_groups_in_text(category_text)
+    if intent_group == 'shoes' and 'fashion' in category_groups:
+        category_match = category_match and (
+            _contains_intent_term(title_text, intent_group)
+            or _contains_intent_term(
+                _normalized_fields(item, ('categoryName', 'categoryPath')),
+                intent_group,
+            )
+        )
+        if not category_match:
+            primary_match = False
+            description_match = False
+
+    boost = 0.0
+    if primary_match:
+        boost += 35.0
+    if category_match:
+        boost += 20.0
+    if title_match:
+        boost += 15.0
+    elif description_match:
+        boost += 10.0
+
+    is_relevant = primary_match or category_match or title_match or description_match
+    clear_mismatch = bool(category_groups - {intent_group}) and not is_relevant
+    return boost, is_relevant, clear_mismatch
 
 
 # ─── Smart ranking score ──────────────────────────────────────────────────────
@@ -553,19 +665,64 @@ def rank_search_results(
     intent = detect_intent(tokens)
     expanded = intent.get('expandedTokens') or tokens
 
-    # Score each candidate
-    scored: list[tuple[float, dict[str, Any]]] = []
+    # First pass: score generic relevance and classify intent relevance.
+    scored_candidates: list[dict[str, Any]] = []
     for item in candidates:
         match = compute_match_score(item, tokens, expanded, intent)
-        rank = compute_smart_rank(item, match)
+        base_rank = compute_smart_rank(item, match)
+        intent_boost, intent_relevant, clear_mismatch = compute_intent_relevance(
+            item, intent
+        )
         item = dict(item)
-        item['smartSearchScore'] = rank
         item['searchMatchScore'] = match
-        scored.append((rank, item))
+        scored_candidates.append({
+            'item': item,
+            'base_rank': base_rank,
+            'intent_boost': intent_boost,
+            'intent_relevant': intent_relevant,
+            'intent_authoritative': (
+                intent_relevant
+                and str(item.get('trustStatus') or '').lower() not in _QUARANTINED
+            ),
+            'clear_mismatch': clear_mismatch,
+        })
 
-    # Sort by smart rank (descending)
-    scored.sort(key=lambda x: x[0], reverse=True)
-    ranked = [item for _, item in scored]
+    relevant_count = sum(
+        1 for candidate in scored_candidates if candidate['intent_authoritative']
+    )
+
+    # Second pass: intent wins over public rank/discount when relevant products
+    # exist, while a no-match catalog keeps the original broad fallback order.
+    scored: list[tuple[float, float, float, float, dict[str, Any]]] = []
+    for candidate in scored_candidates:
+        intent_adjustment = 0.0
+        if relevant_count:
+            if candidate['intent_authoritative']:
+                intent_adjustment = candidate['intent_boost']
+            elif candidate['intent_relevant']:
+                intent_adjustment = 0.0
+            else:
+                intent_adjustment = -35.0 if candidate['clear_mismatch'] else -20.0
+                if relevant_count >= 3:
+                    intent_adjustment -= 20.0
+
+        rank = round(max(
+            0.0,
+            min(100.0, candidate['base_rank'] + intent_adjustment),
+        ), 2)
+        item = candidate['item']
+        item['smartSearchScore'] = rank
+        scored.append((
+            rank,
+            candidate['intent_boost'] if candidate['intent_authoritative'] else 0.0,
+            item['searchMatchScore'],
+            candidate['base_rank'],
+            item,
+        ))
+
+    # Intent boost and text match break ties caused by the public 0–100 score cap.
+    scored.sort(key=lambda x: x[:4], reverse=True)
+    ranked = [item for *_, item in scored]
 
     # Apply filters (post-scoring so we can still access all products for facets)
     filtered = apply_filters(
