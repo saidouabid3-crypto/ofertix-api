@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from google.api_core.exceptions import FailedPrecondition
 from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import BaseModel
@@ -15,6 +15,7 @@ from services.catalog_edge_cache import (
     PRODUCTS_FRESH_TTL, PRODUCTS_STALE_TTL,
     SEARCH_FRESH_TTL, SEARCH_STALE_TTL,
 )
+from services.deal_verdict_service import analyze_deal_verdict
 from services.public_catalog_policy import evaluate_public_product, load_catalog_config
 from services.public_product_service import (
     is_usable_public_product,
@@ -55,6 +56,28 @@ def _stream_products(read_limit: int) -> list[dict]:
     except FailedPrecondition:
         docs = list(db.collection("products").limit(read_limit).stream())
     return [{"id": doc.id, **(doc.to_dict() or {})} for doc in docs]
+
+
+async def _load_public_product(product_id: str, market: str) -> dict | None:
+    """Load one product through the same public preparation as Product Details."""
+    try:
+        doc = await asyncio.to_thread(
+            db.collection("products").document(product_id).get
+        )
+        if doc.exists:
+            raw = {"id": doc.id, **(doc.to_dict() or {})}
+            item = prepare_public_product(raw, market)
+            return item if is_usable_public_product(item, market) else None
+    except Exception:
+        pass
+
+    raw_docs = await asyncio.to_thread(_stream_products, 800)
+    for raw in raw_docs:
+        if str(raw.get("id") or "") != product_id:
+            continue
+        item = prepare_public_product(raw, market)
+        return item if is_usable_public_product(item, market) else None
+    return None
 
 
 def _build_products_response(
@@ -188,6 +211,16 @@ async def get_product_detail(product_id: str, country: str = "es"):
         }
 
     return {"ok": False, "error": "Product not found", "productId": product_id}
+
+
+@router.get("/api/products/{product_id}/deal-verdict")
+async def get_product_deal_verdict(product_id: str, country: str = "es"):
+    market = normalize_market(country)
+    item = await _load_public_product(product_id, market)
+    if item is None:
+        # Hidden and missing products intentionally share the same response.
+        raise HTTPException(status_code=404, detail="Product not found")
+    return analyze_deal_verdict(item, market=market)
 
 
 @router.post("/api/products/search")
