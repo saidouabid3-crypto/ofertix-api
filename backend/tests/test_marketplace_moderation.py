@@ -332,3 +332,177 @@ def test_is_public_marketplace_item_rejects_banned_seller():
     assert not is_public_marketplace_item(
         {'status': 'approved', 'isActive': True, 'sellerBanned': True}
     )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Batch 15B-A additions
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── Task 1: restore sets approved, not active ─────────────────────────────────
+
+def test_restore_sets_status_approved_not_active(monkeypatch):
+    repo, ref = _make_admin_repo(monkeypatch, initial_status='hidden')
+    result = repo.restore_marketplace_item('item-1', 'admin-uid', 'admin@test.com')
+    assert result['status'] == 'approved'
+    assert ref.captured['status'] == 'approved'
+
+
+def test_restore_sets_isactive_true(monkeypatch):
+    repo, ref = _make_admin_repo(monkeypatch, initial_status='hidden')
+    repo.restore_marketplace_item('item-1', 'admin-uid', 'admin@test.com')
+    assert ref.captured['isActive'] is True
+
+
+def test_restore_sets_visible_to_users_true(monkeypatch):
+    repo, ref = _make_admin_repo(monkeypatch, initial_status='hidden')
+    repo.restore_marketplace_item('item-1', 'admin-uid', 'admin@test.com')
+    assert ref.captured['visibleToUsers'] is True
+
+
+def test_restore_clears_rejection_reason(monkeypatch):
+    repo, ref = _make_admin_repo(monkeypatch, initial_status='rejected')
+    repo.restore_marketplace_item('item-1', 'admin-uid', 'admin@test.com')
+    assert ref.captured.get('rejectionReason') is None
+
+
+def test_restored_item_is_public_safe():
+    """An item in the state that restore produces passes the public visibility check."""
+    restored = {'status': 'approved', 'isActive': True, 'visibleToUsers': True}
+    assert is_public_marketplace_item(restored)
+
+
+# ── Task 2: seller counter sync ───────────────────────────────────────────────
+
+def test_approve_calls_seller_sell_count_sync(monkeypatch):
+    """After approve, _sync_seller_sell_count is called with the item's sellerId."""
+    synced = []
+    ref = _FakeRef(data={'status': 'pending', 'sellerId': 'seller-42'})
+    monkeypatch.setattr('repositories.admin_repository.db', _FakeDb(ref))
+    repo = AdminRepository()
+    monkeypatch.setattr(repo, '_sync_seller_sell_count', lambda uid: synced.append(uid))
+    repo.approve_marketplace_item('item-1', 'admin-uid', 'admin@test.com')
+    assert synced == ['seller-42']
+
+
+def test_reject_calls_seller_sell_count_sync(monkeypatch):
+    synced = []
+    ref = _FakeRef(data={'status': 'approved', 'sellerId': 'seller-42'})
+    monkeypatch.setattr('repositories.admin_repository.db', _FakeDb(ref))
+    repo = AdminRepository()
+    monkeypatch.setattr(repo, '_sync_seller_sell_count', lambda uid: synced.append(uid))
+    repo.reject_marketplace_item('item-1', 'admin-uid', 'admin@test.com', 'spam')
+    assert synced == ['seller-42']
+
+
+def test_hide_calls_seller_sell_count_sync(monkeypatch):
+    synced = []
+    ref = _FakeRef(data={'status': 'approved', 'sellerId': 'seller-42'})
+    monkeypatch.setattr('repositories.admin_repository.db', _FakeDb(ref))
+    repo = AdminRepository()
+    monkeypatch.setattr(repo, '_sync_seller_sell_count', lambda uid: synced.append(uid))
+    repo.hide_marketplace_item('item-1', 'admin-uid', 'admin@test.com')
+    assert synced == ['seller-42']
+
+
+def test_sync_seller_sell_count_counts_only_public_items(monkeypatch):
+    """_sync_seller_sell_count writes the count of public-safe items to the user doc."""
+    written = {}
+
+    class _ItemDoc:
+        def __init__(self, data):
+            self._data = data
+        def to_dict(self):
+            return dict(self._data)
+
+    class _ItemQuery:
+        def where(self, *a):
+            return self
+        def limit(self, n):
+            return self
+        def stream(self):
+            return [
+                _ItemDoc({'status': 'approved', 'isActive': True}),   # public
+                _ItemDoc({'status': 'approved', 'isActive': True}),   # public
+                _ItemDoc({'status': 'pending', 'isActive': True}),    # excluded
+                _ItemDoc({'status': 'hidden', 'isActive': False}),    # excluded
+            ]
+
+    class _UserRef:
+        def set(self, data, merge=False):
+            written.update(data)
+
+    class _SyncDb:
+        def collection(self, name):
+            return self
+        def where(self, *a):
+            return self
+        def limit(self, n):
+            return self
+        def stream(self):
+            return [
+                _ItemDoc({'status': 'approved', 'isActive': True}),
+                _ItemDoc({'status': 'approved', 'isActive': True}),
+                _ItemDoc({'status': 'pending', 'isActive': True}),
+                _ItemDoc({'status': 'hidden', 'isActive': False}),
+            ]
+        def document(self, uid=None):
+            return _UserRef()
+
+    monkeypatch.setattr('repositories.admin_repository.db', _SyncDb())
+    repo = AdminRepository()
+    repo._sync_seller_sell_count('seller-1')
+    assert written.get('sell_items_count') == 2
+
+
+def test_sync_seller_sell_count_noop_for_empty_seller(monkeypatch):
+    """No DB call if seller_id is empty."""
+    calls = []
+
+    class _NoopDb:
+        def collection(self, name):
+            calls.append(name)
+            return self
+
+    monkeypatch.setattr('repositories.admin_repository.db', _NoopDb())
+    repo = AdminRepository()
+    repo._sync_seller_sell_count('')
+    assert calls == []
+
+
+# ── Task 3: visibleToUsers legacy compatibility ───────────────────────────────
+
+def test_legacy_approved_active_item_without_visible_flag_is_public():
+    """Old items with no visibleToUsers field stay public if approved and active."""
+    assert is_public_marketplace_item({'status': 'approved', 'isActive': True})
+
+
+def test_legacy_pending_item_without_visible_flag_is_hidden():
+    assert not is_public_marketplace_item({'status': 'pending', 'isActive': True})
+
+
+def test_legacy_hidden_item_without_visible_flag_is_hidden():
+    assert not is_public_marketplace_item({'status': 'hidden', 'isActive': False})
+
+
+def test_new_create_sets_visible_to_users_false(monkeypatch):
+    svc, captured = _make_marketplace_service(monkeypatch)
+    svc.create_item({'title': 'New item'}, current_user={'uid': 'user-1'})
+    assert captured.get('visibleToUsers') is False
+
+
+def test_new_approve_sets_visible_to_users_true(monkeypatch):
+    repo, ref = _make_admin_repo(monkeypatch)
+    repo.approve_marketplace_item('item-1', 'admin-uid', 'admin@test.com')
+    assert ref.captured.get('visibleToUsers') is True
+
+
+def test_reject_sets_visible_to_users_false(monkeypatch):
+    repo, ref = _make_admin_repo(monkeypatch, initial_status='approved')
+    repo.reject_marketplace_item('item-1', 'admin-uid', 'admin@test.com', 'policy')
+    assert ref.captured.get('visibleToUsers') is False
+
+
+def test_hide_sets_visible_to_users_false(monkeypatch):
+    repo, ref = _make_admin_repo(monkeypatch, initial_status='approved')
+    repo.hide_marketplace_item('item-1', 'admin-uid', 'admin@test.com')
+    assert ref.captured.get('visibleToUsers') is False

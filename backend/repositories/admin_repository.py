@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from core.firebase import db
+from repositories.marketplace_repository import is_public_marketplace_item
 from utils.country_intelligence import GLOBAL_CODES, enrich_country_fields, normalize_country
 
 
@@ -522,9 +523,14 @@ class AdminRepository:
     ) -> Dict[str, Any]:
         ref = db.collection('marketplace_items').document(item_id)
         doc = ref.get()
-        before_status = None
-        if doc.exists:
-            before_status = (doc.to_dict() or {}).get('status')
+        doc_data = doc.to_dict() or {} if doc.exists else {}
+        before_status = doc_data.get('status')
+        seller_id = (
+            doc_data.get('sellerId')
+            or doc_data.get('userId')
+            or doc_data.get('ownerId')
+            or ''
+        )
         is_public = new_status in {'active', 'approved', 'published'}
         now = _now_iso()
         update: Dict[str, Any] = {
@@ -554,7 +560,31 @@ class AdminRepository:
             after_status=new_status,
             reason=reason,
         )
+        self._sync_seller_sell_count(seller_id)
         return {'ok': True, 'id': item_id, 'status': new_status}
+
+    def _sync_seller_sell_count(self, seller_id: str) -> None:
+        """Recount and persist seller's public sell_items_count after any moderation action."""
+        if not seller_id:
+            return
+        try:
+            count = 0
+            docs = (
+                db.collection('marketplace_items')
+                .where('sellerId', '==', seller_id)
+                .limit(200)
+                .stream()
+            )
+            for doc in docs:
+                data = doc.to_dict() or {}
+                if is_public_marketplace_item(data):
+                    count += 1
+            db.collection('users').document(seller_id).set(
+                {'sell_items_count': count, 'updated_at': _now_iso()},
+                merge=True,
+            )
+        except Exception:
+            pass
 
     def approve_marketplace_item(self, item_id: str, admin_uid: str, admin_email: str, reason: Optional[str] = None) -> Dict[str, Any]:
         return self._moderate_marketplace(item_id, 'approved', admin_uid, admin_email, reason)
@@ -566,7 +596,7 @@ class AdminRepository:
         return self._moderate_marketplace(item_id, 'hidden', admin_uid, admin_email, reason)
 
     def restore_marketplace_item(self, item_id: str, admin_uid: str, admin_email: str) -> Dict[str, Any]:
-        return self._moderate_marketplace(item_id, 'active', admin_uid, admin_email)
+        return self._moderate_marketplace(item_id, 'approved', admin_uid, admin_email)
 
     # ─────────────────────── reports center ──────────────────────────────────
 

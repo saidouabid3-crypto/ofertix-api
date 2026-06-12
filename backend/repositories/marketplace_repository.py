@@ -65,6 +65,9 @@ class MarketplaceRepository:
         requested_country = normalize_country(country)
         query = db.collection(COLLECTION)
         if only_active:
+            # Query by isActive only (not visibleToUsers) so legacy items that
+            # predate the visibleToUsers field are not inadvertently hidden.
+            # is_public_marketplace_item() in Python handles the full check.
             query = query.where('isActive', '==', True)
         if city:
             query = query.where('city', '==', city)
