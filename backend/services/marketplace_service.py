@@ -33,6 +33,7 @@ class MarketplaceService:
         # Security: user-created items must start pending and inactive until moderated.
         payload['status'] = 'pending'
         payload['isActive'] = False
+        payload['visibleToUsers'] = False
         # Strip moderation/trust fields the user must not control.
         for _field in ('isFeatured', 'isSponsored', 'sellerBanned', 'isSellerBanned',
                        'sellerBlocked', 'moderationStatus', 'sellerStatus', 'adminIssue'):

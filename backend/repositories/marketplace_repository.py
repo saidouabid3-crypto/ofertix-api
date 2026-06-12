@@ -88,7 +88,7 @@ class MarketplaceRepository:
         now = datetime.now(timezone.utc)
         data = enrich_country_fields({
             **payload,
-            'isActive': payload.get('isActive', True),
+            'isActive': payload.get('isActive', False),
             'isFeatured': payload.get('isFeatured', False),
             'isSponsored': payload.get('isSponsored', False),
             'views': int(payload.get('views', 0) or 0),

@@ -525,13 +525,25 @@ class AdminRepository:
         before_status = None
         if doc.exists:
             before_status = (doc.to_dict() or {}).get('status')
-        is_active = new_status in {'active', 'approved', 'published'}
-        ref.update({
+        is_public = new_status in {'active', 'approved', 'published'}
+        now = _now_iso()
+        update: Dict[str, Any] = {
             'status': new_status,
-            'isActive': is_active,
-            'updatedAt': _now_iso(),
-            'adminModeratedAt': _now_iso(),
-        })
+            'isActive': is_public,
+            'visibleToUsers': is_public,
+            'updatedAt': now,
+            'adminModeratedAt': now,
+        }
+        if is_public:
+            update['approvedAt'] = now
+            update['approvedBy'] = admin_uid
+            update['rejectionReason'] = None
+        elif new_status == 'rejected':
+            update['rejectedAt'] = now
+            update['rejectedBy'] = admin_uid
+            if reason:
+                update['rejectionReason'] = reason
+        ref.update(update)
         self._write_admin_log(
             action=f'marketplace_{new_status}',
             target_type='marketplace_item',
