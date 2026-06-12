@@ -105,7 +105,7 @@ def compute_discovery_score(
     if 'duplicate_candidate' in flags:
         score -= 15
     if item_id and item_id in seen_ids:
-        score -= 15
+        score -= 40
     if trust in _QUARANTINED:
         score -= 30
 
@@ -303,9 +303,11 @@ def build_discovery_feed(
             'stores': [],
         }
 
-    # Score and rank every product
+    # Score and rank every product.
+    # Combine day_seed + variant so different variants produce different orderings.
+    rotation_seed = f"{day_seed}:{variant}"
     scored: list[tuple[float, dict[str, Any]]] = [
-        (compute_discovery_score(p, day_seed=day_seed, seen_ids=seen_set), p)
+        (compute_discovery_score(p, day_seed=rotation_seed, seen_ids=seen_set), p)
         for p in all_products
     ]
     scored.sort(key=lambda x: x[0], reverse=True)
