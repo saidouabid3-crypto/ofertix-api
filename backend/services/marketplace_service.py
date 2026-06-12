@@ -1,8 +1,53 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+
 from repositories.marketplace_repository import MarketplaceRepository
 from repositories.profile_repository import profile_repository
 from core.market_config import normalize_market, SUPPORTED_MARKETS
 from utils.market_filter import item_available_for_country, normalize_item_market_fields
+
+_BLOCKED_URL_SCHEMES = ('data:', 'file://', 'blob:')
+_BLOCKED_HOSTS = frozenset(('localhost', '127.0.0.1', '0.0.0.0', '::1'))
+
+
+def _assert_safe_image_url(url: str) -> None:
+    url = url.strip()
+    if not url:
+        return
+    for scheme in _BLOCKED_URL_SCHEMES:
+        if url.startswith(scheme):
+            raise ValueError(f'Image URL not accepted: {scheme} scheme is blocked; upload via /marketplace/upload-image')
+    if not url.startswith('http://') and not url.startswith('https://'):
+        raise ValueError('Image URL must start with http:// or https://')
+    try:
+        host = urlparse(url).hostname or ''
+    except Exception:
+        raise ValueError('Image URL is not valid')
+    if not host or host in _BLOCKED_HOSTS:
+        raise ValueError('Image URL host is not accepted')
+
+
+def _normalize_and_validate_images(payload: Dict[str, Any]) -> None:
+    """Normalize images/image fields and reject unsafe URLs (base64, file://, localhost)."""
+    raw_images = payload.get('images') or payload.get('gallery') or []
+    if isinstance(raw_images, str):
+        raw_images = [raw_images] if raw_images else []
+
+    safe_urls: List[str] = []
+    for raw in raw_images:
+        url = str(raw or '').strip()
+        if url:
+            _assert_safe_image_url(url)
+            safe_urls.append(url)
+
+    payload['images'] = safe_urls
+
+    single = str(payload.get('image') or '').strip()
+    if single:
+        _assert_safe_image_url(single)
+    elif safe_urls:
+        payload['image'] = safe_urls[0]
+
 
 class MarketplaceService:
     def __init__(self):
@@ -38,6 +83,8 @@ class MarketplaceService:
         for _field in ('isFeatured', 'isSponsored', 'sellerBanned', 'isSellerBanned',
                        'sellerBlocked', 'moderationStatus', 'sellerStatus', 'adminIssue'):
             payload.pop(_field, None)
+        # Validate and normalize image URLs (rejects base64, file://, localhost).
+        _normalize_and_validate_images(payload)
         profile = profile_repository.get_profile(user_id) or {}
         payload['sellerName'] = payload.get('sellerName') or profile.get('display_name') or ''
         payload['sellerUsername'] = payload.get('sellerUsername') or profile.get('username') or ''

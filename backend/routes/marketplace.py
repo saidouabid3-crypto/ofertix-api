@@ -1,11 +1,53 @@
 from typing import Any, Dict, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from core.auth import require_active_user
 from core.market_config import normalize_market
+from services.cloudinary_upload_service import cloudinary_upload_service
 from services.marketplace_service import MarketplaceService
 
 router = APIRouter(prefix='/marketplace', tags=['marketplace'])
 service = MarketplaceService()
+
+_IMAGE_ALLOWED_TYPES = {'image/jpeg', 'image/png', 'image/webp'}
+_IMAGE_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
+
+
+@router.post('/upload-image')
+async def upload_marketplace_image(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_active_user),
+):
+    if not file.content_type or file.content_type not in _IMAGE_ALLOWED_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail='Only JPEG, PNG, or WebP images are allowed',
+        )
+    import io
+    content = await file.read()
+    if len(content) > _IMAGE_MAX_BYTES:
+        raise HTTPException(status_code=400, detail='Image must be under 5 MB')
+    file.file = io.BytesIO(content)
+    try:
+        result = cloudinary_upload_service.upload_marketplace_image(file)
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail='Image upload is temporarily unavailable',
+        )
+    url = result.get('secure_url') or ''
+    if not url:
+        raise HTTPException(
+            status_code=503,
+            detail='Image upload is temporarily unavailable',
+        )
+    return {
+        'success': True,
+        'url': url,
+        'publicId': result.get('public_id', ''),
+        'width': result.get('width'),
+        'height': result.get('height'),
+    }
+
 
 @router.get('/items')
 def list_marketplace_items(limit: int = Query(default=30, ge=1, le=100), country: str = Query(default='es'), city: Optional[str] = None, category: Optional[str] = None):

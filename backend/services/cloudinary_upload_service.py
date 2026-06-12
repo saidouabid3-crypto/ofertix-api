@@ -15,6 +15,25 @@ class CloudinaryUploadService:
             secure=True,
         )
 
+    def upload_marketplace_image(self, file: UploadFile) -> dict:
+        public_id = f"ofertix/marketplace/img_{uuid4().hex[:16]}"
+        file.file.seek(0)
+        result = cloudinary.uploader.upload(
+            file.file,
+            resource_type="image",
+            public_id=public_id,
+            overwrite=False,
+            transformation=[
+                {"width": 1200, "crop": "limit", "quality": "auto:good"}
+            ],
+        )
+        return {
+            "secure_url": result.get("secure_url", ""),
+            "public_id": result.get("public_id", public_id),
+            "width": result.get("width"),
+            "height": result.get("height"),
+        }
+
     def upload_reel_video(self, file: UploadFile) -> dict:
         public_id = f"ofertix/smart_reels/reel_{uuid4().hex[:16]}"
 

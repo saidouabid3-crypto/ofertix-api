@@ -506,3 +506,171 @@ def test_hide_sets_visible_to_users_false(monkeypatch):
     repo, ref = _make_admin_repo(monkeypatch, initial_status='approved')
     repo.hide_marketplace_item('item-1', 'admin-uid', 'admin@test.com')
     assert ref.captured.get('visibleToUsers') is False
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Batch 15C additions — image upload endpoint + image URL safety
+# ════════════════════════════════════════════════════════════════════════════
+
+import asyncio
+
+from services.marketplace_service import _assert_safe_image_url, _normalize_and_validate_images
+
+
+# ── Upload endpoint auth ──────────────────────────────────────────────────────
+
+def test_upload_image_endpoint_requires_auth():
+    deps = _route_deps(marketplace_routes.router, '/marketplace/upload-image', 'POST')
+    assert require_active_user in deps
+
+
+# ── Upload endpoint content-type validation ───────────────────────────────────
+
+def test_upload_image_rejects_non_image_content_type():
+    from routes.marketplace import upload_marketplace_image
+
+    class _BadFile:
+        content_type = 'application/pdf'
+        filename = 'cv.pdf'
+
+        async def read(self):
+            return b'fake'
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(upload_marketplace_image(_BadFile(), current_user={'uid': 'u1'}))
+    assert exc.value.status_code == 400
+
+
+def test_upload_image_rejects_svg():
+    from routes.marketplace import upload_marketplace_image
+
+    class _SvgFile:
+        content_type = 'image/svg+xml'
+        filename = 'evil.svg'
+
+        async def read(self):
+            return b'<svg/>'
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(upload_marketplace_image(_SvgFile(), current_user={'uid': 'u1'}))
+    assert exc.value.status_code == 400
+
+
+# ── Upload endpoint returns 503 when Cloudinary is unavailable ────────────────
+
+def test_upload_image_returns_503_if_cloudinary_unavailable(monkeypatch):
+    import routes.marketplace as mp_module
+    from routes.marketplace import upload_marketplace_image
+
+    def _fail(_file):
+        raise Exception('Cloudinary not configured')
+
+    monkeypatch.setattr(
+        mp_module.cloudinary_upload_service,
+        'upload_marketplace_image',
+        _fail,
+    )
+
+    class _ImgFile:
+        content_type = 'image/jpeg'
+        filename = 'photo.jpg'
+
+        async def read(self):
+            return b'\xff\xd8' + b'x' * 100
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(upload_marketplace_image(_ImgFile(), current_user={'uid': 'u1'}))
+    assert exc.value.status_code == 503
+
+
+# ── Image URL safety — unit tests ─────────────────────────────────────────────
+
+@pytest.mark.parametrize('bad_url', [
+    'data:image/jpeg;base64,/9j/abc',
+    'data:image/png;base64,iVBORw0K',
+    'file:///etc/passwd',
+    'file://C:/Windows/System32',
+    'blob:http://example.com/some-id',
+])
+def test_assert_safe_image_url_rejects_blocked_schemes(bad_url):
+    with pytest.raises(ValueError):
+        _assert_safe_image_url(bad_url)
+
+
+@pytest.mark.parametrize('bad_url', [
+    'http://localhost/img.jpg',
+    'http://127.0.0.1/img.jpg',
+    'https://localhost:8080/img.jpg',
+])
+def test_assert_safe_image_url_rejects_internal_hosts(bad_url):
+    with pytest.raises(ValueError):
+        _assert_safe_image_url(bad_url)
+
+
+@pytest.mark.parametrize('good_url', [
+    'https://res.cloudinary.com/ofertix/img.jpg',
+    'https://cdn.example.com/photo.webp',
+    'http://images.example.com/cover.png',
+])
+def test_assert_safe_image_url_accepts_safe_urls(good_url):
+    _assert_safe_image_url(good_url)   # must not raise
+
+
+# ── create_item image normalization ───────────────────────────────────────────
+
+def test_marketplace_create_rejects_base64_image(monkeypatch):
+    svc, _ = _make_marketplace_service(monkeypatch)
+    with pytest.raises(ValueError, match='blocked'):
+        svc.create_item(
+            {'title': 'Test', 'images': ['data:image/jpeg;base64,/9j/abc']},
+            current_user={'uid': 'user-1'},
+        )
+
+
+def test_marketplace_create_rejects_file_path_image(monkeypatch):
+    svc, _ = _make_marketplace_service(monkeypatch)
+    with pytest.raises(ValueError):
+        svc.create_item(
+            {'title': 'Test', 'images': ['file:///private/photo.jpg']},
+            current_user={'uid': 'user-1'},
+        )
+
+
+def test_marketplace_create_accepts_https_image_and_sets_cover(monkeypatch):
+    svc, captured = _make_marketplace_service(monkeypatch)
+    svc.create_item(
+        {'title': 'Test', 'images': ['https://cdn.example.com/img.jpg']},
+        current_user={'uid': 'user-1'},
+    )
+    assert captured['images'] == ['https://cdn.example.com/img.jpg']
+    assert captured.get('image') == 'https://cdn.example.com/img.jpg'
+
+
+def test_marketplace_create_cover_is_first_image(monkeypatch):
+    svc, captured = _make_marketplace_service(monkeypatch)
+    urls = [
+        'https://cdn.example.com/first.jpg',
+        'https://cdn.example.com/second.jpg',
+    ]
+    svc.create_item({'title': 'Test', 'images': urls}, current_user={'uid': 'user-1'})
+    assert captured['image'] == urls[0]
+
+
+def test_marketplace_create_with_images_remains_pending(monkeypatch):
+    svc, captured = _make_marketplace_service(monkeypatch)
+    svc.create_item(
+        {'title': 'Test', 'images': ['https://cdn.example.com/img.jpg']},
+        current_user={'uid': 'user-1'},
+    )
+    assert captured['status'] == 'pending'
+    assert captured['isActive'] is False
+    assert captured['visibleToUsers'] is False
+
+
+# ── Normalize gallery field ───────────────────────────────────────────────────
+
+def test_normalize_and_validate_images_accepts_gallery_field():
+    payload = {'gallery': ['https://cdn.example.com/a.jpg']}
+    _normalize_and_validate_images(payload)
+    assert payload['images'] == ['https://cdn.example.com/a.jpg']
+    assert payload.get('image') == 'https://cdn.example.com/a.jpg'
