@@ -20,6 +20,16 @@ _PRESERVED_CATALOG_FIELDS = (
     "isExpired",
     "adminIssue",
 )
+_PRIVATE_PUBLIC_PRODUCT_FIELDS = {
+    "adminIssue",
+    "adminNotes",
+    "hiddenReason",
+    "internalNotes",
+    "moderationNotes",
+    "moderationReason",
+    "rejectedReason",
+    "rejectionReason",
+}
 
 
 def prepare_public_product(raw: dict[str, Any], market: str) -> dict[str, Any]:
@@ -80,3 +90,15 @@ def public_product_exclusion_reason(item: dict[str, Any], market: str) -> str | 
 
 def is_usable_public_product(item: dict[str, Any], market: str) -> bool:
     return public_product_exclusion_reason(item, market) is None
+
+
+def sanitize_public_product(item: dict[str, Any]) -> dict[str, Any]:
+    public_item = {}
+    for key, value in item.items():
+        normalized_key = key.lower().replace("_", "")
+        if key in _PRIVATE_PUBLIC_PRODUCT_FIELDS:
+            continue
+        if normalized_key.startswith(("admin", "internal", "moderation")):
+            continue
+        public_item[key] = value
+    return public_item

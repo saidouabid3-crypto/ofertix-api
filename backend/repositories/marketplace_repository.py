@@ -7,12 +7,50 @@ from utils.country_intelligence import enrich_country_fields, item_matches_count
 COLLECTION = 'marketplace_items'
 REPORTS_COLLECTION = 'item_reports'
 FAVORITES_COLLECTION = 'item_favorites'
+PUBLIC_MARKETPLACE_STATUSES = {'active', 'approved', 'published'}
+BLOCKED_MARKETPLACE_STATUSES = {
+    'archived',
+    'blocked',
+    'deleted',
+    'hidden',
+    'pending',
+    'rejected',
+    'review',
+    'under_review',
+}
 
 
 def _with_id(doc) -> Dict[str, Any]:
     data = enrich_country_fields(doc.to_dict() or {})
     data['id'] = doc.id
     return data
+
+
+def is_public_marketplace_item(item: Dict[str, Any]) -> bool:
+    status = str(item.get('status') or '').strip().lower()
+    if status not in PUBLIC_MARKETPLACE_STATUSES:
+        return False
+    if status in BLOCKED_MARKETPLACE_STATUSES:
+        return False
+    for field in ('isActive', 'isVisible', 'visible', 'visibleToUsers', 'publicVisible'):
+        if item.get(field) is False:
+            return False
+    moderation_status = str(
+        item.get('moderationStatus') or item.get('moderation_status') or ''
+    ).strip().lower()
+    if moderation_status in BLOCKED_MARKETPLACE_STATUSES:
+        return False
+    seller_status = str(
+        item.get('sellerStatus') or item.get('seller_status') or ''
+    ).strip().lower()
+    if seller_status in {'banned', 'blocked', 'deleted', 'suspended'}:
+        return False
+    if any(
+        item.get(field) is True
+        for field in ('sellerBanned', 'isSellerBanned', 'sellerBlocked')
+    ):
+        return False
+    return True
 
 
 class MarketplaceRepository:
@@ -37,8 +75,7 @@ class MarketplaceRepository:
         items = []
         for doc in query.stream():
             item = _with_id(doc)
-            status = str(item.get('status') or 'active').lower()
-            if status not in {'active', 'approved', 'published'}:
+            if not is_public_marketplace_item(item):
                 continue
             if not item_matches_country(item, requested_country):
                 continue
@@ -69,6 +106,12 @@ class MarketplaceRepository:
         if not doc.exists:
             return None
         return _with_id(doc)
+
+    def get_public_item(self, item_id: str) -> Optional[Dict[str, Any]]:
+        item = self.get_item(item_id)
+        if not item or not is_public_marketplace_item(item):
+            return None
+        return item
 
     def update_item(self, item_id: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         ref = db.collection(COLLECTION).document(item_id)

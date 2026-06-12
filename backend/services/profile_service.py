@@ -3,9 +3,6 @@ from repositories.profile_repository import profile_repository
 
 class ProfileService:
     def get_profile(self, uid: str):
-        profile = profile_repository.sync_creator_counters(uid)
-        if profile:
-            return profile
         return profile_repository.get_profile(uid)
 
     def get_creator_reels(self, uid: str, limit: int = 30):

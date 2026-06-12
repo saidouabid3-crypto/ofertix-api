@@ -9,15 +9,22 @@ class GeoAlertRepository:
     COLLECTION = 'geo_store_deals'
 
     def __init__(self):
-        self.collection = db.collection(self.COLLECTION)
+        self.collection = db.collection(self.COLLECTION) if db is not None else None
 
-    def create_store_deal(self, data: dict) -> dict:
+    def create_store_deal(
+        self,
+        data: dict,
+        creator_id: str,
+        status: str = 'pending',
+    ) -> dict:
         now = datetime.utcnow().isoformat()
         item_id = f'geo_{uuid4().hex[:12]}'
         item = {
             'id': item_id,
             **data,
-            'status': 'active',
+            'creatorId': creator_id,
+            'userId': creator_id,
+            'status': 'active' if status == 'active' else 'pending',
             'created_at': now,
             'updated_at': now,
         }

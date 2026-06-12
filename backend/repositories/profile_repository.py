@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Optional
 
 from core.firebase import db
+from repositories.marketplace_repository import is_public_marketplace_item
 
 
 class ProfileRepository:
@@ -11,10 +12,12 @@ class ProfileRepository:
     FOLLOWS_COLLECTION = 'user_follows'
 
     def __init__(self):
-        self.users = db.collection(self.USERS_COLLECTION)
-        self.reels = db.collection(self.REELS_COLLECTION)
-        self.marketplace = db.collection(self.MARKETPLACE_COLLECTION)
-        self.follows = db.collection(self.FOLLOWS_COLLECTION)
+        self.users = db.collection(self.USERS_COLLECTION) if db is not None else None
+        self.reels = db.collection(self.REELS_COLLECTION) if db is not None else None
+        self.marketplace = (
+            db.collection(self.MARKETPLACE_COLLECTION) if db is not None else None
+        )
+        self.follows = db.collection(self.FOLLOWS_COLLECTION) if db is not None else None
 
     def get_profile(self, uid: str) -> Optional[dict]:
         uid = (uid or '').strip()
@@ -68,8 +71,7 @@ class ProfileRepository:
         items = []
         for doc in docs:
             data = doc.to_dict() or {}
-            status = str(data.get('status') or 'active').lower()
-            if data.get('isActive') is False or status in {'deleted', 'rejected'}:
+            if not is_public_marketplace_item(data):
                 continue
             data['id'] = data.get('id') or doc.id
             items.append(self._normalize_sell_item(data))
@@ -132,8 +134,7 @@ class ProfileRepository:
         docs = list(self.marketplace.where('sellerId', '==', uid).limit(100).stream())
         for doc in docs:
             data = doc.to_dict() or {}
-            status = str(data.get('status') or 'active').lower()
-            if data.get('isActive') is False or status in {'deleted', 'rejected'}:
+            if not is_public_marketplace_item(data):
                 continue
             count += 1
         return count
@@ -185,24 +186,59 @@ class ProfileRepository:
         )
 
     def _normalize_profile(self, data: dict) -> dict:
-        data.pop('email', None)
-        data['display_name'] = str(data.get('display_name') or data.get('displayName') or data.get('name') or '')
-        data['username'] = str(data.get('username') or '')
-        data['username_lower'] = str(data.get('username_lower') or data.get('usernameLower') or data['username'].lower())
-        data['photo_url'] = str(data.get('photo_url') or data.get('photoUrl') or data.get('avatar_url') or '')
-        data['avatar_url'] = str(data.get('avatar_url') or data['photo_url'])
-        data['bio'] = str(data.get('bio') or '')
-        data['country'] = str(data.get('country') or 'global')
-        data['city'] = str(data.get('city') or '')
-        data['currency'] = str(data.get('currency') or 'EUR')
-        data['role'] = str(data.get('role') or 'user')
-        data['is_creator'] = bool(data.get('is_creator') or data.get('isCreator') or False)
-        data['is_verified'] = bool(data.get('is_verified') or data.get('isVerified') or data.get('verified') or False)
-        data['seller_verified'] = bool(data.get('seller_verified') or data.get('sellerVerified') or False)
-        for field in ['followers_count', 'following_count', 'reels_count', 'sell_items_count', 'total_likes', 'rating_count']:
-            data[field] = int(data.get(field, 0) or 0)
-        data['rating_average'] = float(data.get('rating_average') or data.get('ratingAverage') or 0)
-        return data
+        username = str(data.get('username') or '')
+        photo_url = str(
+            data.get('photo_url')
+            or data.get('photoUrl')
+            or data.get('avatar_url')
+            or ''
+        )
+        return {
+            'uid': str(data.get('uid') or ''),
+            'display_name': str(
+                data.get('display_name')
+                or data.get('displayName')
+                or data.get('name')
+                or ''
+            ),
+            'username': username,
+            'username_lower': str(
+                data.get('username_lower')
+                or data.get('usernameLower')
+                or username.lower()
+            ),
+            'photo_url': photo_url,
+            'avatar_url': str(data.get('avatar_url') or photo_url),
+            'bio': str(data.get('bio') or ''),
+            'country': str(data.get('country') or 'global'),
+            'city': str(data.get('city') or ''),
+            'currency': str(data.get('currency') or 'EUR'),
+            'is_creator': bool(
+                data.get('is_creator') or data.get('isCreator') or False
+            ),
+            'is_verified': bool(
+                data.get('is_verified')
+                or data.get('isVerified')
+                or data.get('verified')
+                or False
+            ),
+            'seller_verified': bool(
+                data.get('seller_verified')
+                or data.get('sellerVerified')
+                or False
+            ),
+            'followers_count': int(data.get('followers_count', 0) or 0),
+            'following_count': int(data.get('following_count', 0) or 0),
+            'reels_count': int(data.get('reels_count', 0) or 0),
+            'sell_items_count': int(data.get('sell_items_count', 0) or 0),
+            'total_likes': int(data.get('total_likes', 0) or 0),
+            'rating_average': float(
+                data.get('rating_average') or data.get('ratingAverage') or 0
+            ),
+            'rating_count': int(data.get('rating_count', 0) or 0),
+            'created_at': data.get('created_at') or data.get('createdAt'),
+            'updated_at': data.get('updated_at') or data.get('updatedAt'),
+        }
 
     def _normalize_sell_item(self, item: dict) -> dict:
         item['sellerId'] = str(item.get('sellerId') or item.get('seller_id') or '')

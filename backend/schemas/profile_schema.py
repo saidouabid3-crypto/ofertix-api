@@ -17,7 +17,6 @@ class PublicProfileOut(BaseModel):
     country: str = 'global'
     city: str = ''
     currency: str = 'EUR'
-    role: str = 'user'
     is_creator: bool = False
     is_verified: bool = False
     seller_verified: bool = False

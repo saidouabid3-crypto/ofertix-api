@@ -1,6 +1,6 @@
 from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
-from core.auth import require_active_user, require_user
+from core.auth import require_active_user
 from core.market_config import normalize_market
 from services.marketplace_service import MarketplaceService
 
@@ -20,7 +20,7 @@ def create_marketplace_item(payload: Dict[str, Any], current_user: dict = Depend
 
 @router.get('/items/{item_id}')
 def get_marketplace_item(item_id: str):
-    item = service.get_item(item_id)
+    item = service.get_public_item(item_id)
     if not item:
         raise HTTPException(status_code=404, detail='Marketplace item not found')
     return item

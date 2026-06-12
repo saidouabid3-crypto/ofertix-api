@@ -30,6 +30,13 @@ class MarketplaceService:
         payload['userId'] = user_id
         payload['ownerId'] = user_id
         payload['creatorId'] = user_id
+        # Security: user-created items must start pending and inactive until moderated.
+        payload['status'] = 'pending'
+        payload['isActive'] = False
+        # Strip moderation/trust fields the user must not control.
+        for _field in ('isFeatured', 'isSponsored', 'sellerBanned', 'isSellerBanned',
+                       'sellerBlocked', 'moderationStatus', 'sellerStatus', 'adminIssue'):
+            payload.pop(_field, None)
         profile = profile_repository.get_profile(user_id) or {}
         payload['sellerName'] = payload.get('sellerName') or profile.get('display_name') or ''
         payload['sellerUsername'] = payload.get('sellerUsername') or profile.get('username') or ''
@@ -39,6 +46,9 @@ class MarketplaceService:
 
     def get_item(self, item_id: str):
         return self.repo.get_item(item_id)
+
+    def get_public_item(self, item_id: str):
+        return self.repo.get_public_item(item_id)
 
     def _assert_owner(self, item_id: str, current_user: dict) -> None:
         item = self.repo.get_item(item_id)

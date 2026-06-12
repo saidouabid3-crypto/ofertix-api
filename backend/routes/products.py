@@ -20,6 +20,7 @@ from services.public_catalog_policy import evaluate_public_product, load_catalog
 from services.public_product_service import (
     is_usable_public_product,
     prepare_public_product,
+    sanitize_public_product,
 )
 from services.smart_search_service import rank_search_results
 
@@ -60,14 +61,23 @@ def _stream_products(read_limit: int) -> list[dict]:
 
 async def _load_public_product(product_id: str, market: str) -> dict | None:
     """Load one product through the same public preparation as Product Details."""
+    config = await asyncio.to_thread(load_catalog_config)
+
+    def _prepare(raw: dict) -> dict | None:
+        item = prepare_public_product(raw, market)
+        if not is_usable_public_product(item, market):
+            return None
+        if not evaluate_public_product(item, config).get("visible", False):
+            return None
+        return sanitize_public_product(item)
+
     try:
         doc = await asyncio.to_thread(
             db.collection("products").document(product_id).get
         )
         if doc.exists:
             raw = {"id": doc.id, **(doc.to_dict() or {})}
-            item = prepare_public_product(raw, market)
-            return item if is_usable_public_product(item, market) else None
+            return _prepare(raw)
     except Exception:
         pass
 
@@ -75,8 +85,7 @@ async def _load_public_product(product_id: str, market: str) -> dict | None:
     for raw in raw_docs:
         if str(raw.get("id") or "") != product_id:
             continue
-        item = prepare_public_product(raw, market)
-        return item if is_usable_public_product(item, market) else None
+        return _prepare(raw)
     return None
 
 
@@ -172,45 +181,19 @@ async def get_products(
 
 @router.get("/product-detail/{product_id}")
 async def get_product_detail(product_id: str, country: str = "es"):
-    # Product detail reads a single document by ID — cheap and always fresh.
     market = normalize_market(country)
-
-    try:
-        doc = await asyncio.to_thread(db.collection("products").document(product_id).get)
-        if doc.exists:
-            raw = {"id": doc.id, **(doc.to_dict() or {})}
-            item = prepare_public_product(raw, market)
-            if is_usable_public_product(item, market):
-                return {
-                    "ok": True,
-                    "country": market,
-                    "currency": SUPPORTED_MARKETS[market]["currency"],
-                    "product": item,
-                    "sections": {},
-                    "aiVerdict": {},
-                    "dealDNA": {},
-                }
-    except Exception:
-        pass
-
-    raw_docs = await asyncio.to_thread(_stream_products, 800)
-    for raw in raw_docs:
-        if str(raw.get("id") or "") != product_id:
-            continue
-        item = prepare_public_product(raw, market)
-        if not is_usable_public_product(item, market):
-            break
-        return {
-            "ok": True,
-            "country": market,
-            "currency": SUPPORTED_MARKETS[market]["currency"],
-            "product": item,
-            "sections": {},
-            "aiVerdict": {},
-            "dealDNA": {},
-        }
-
-    return {"ok": False, "error": "Product not found", "productId": product_id}
+    item = await _load_public_product(product_id, market)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return {
+        "ok": True,
+        "country": market,
+        "currency": SUPPORTED_MARKETS[market]["currency"],
+        "product": item,
+        "sections": {},
+        "aiVerdict": {},
+        "dealDNA": {},
+    }
 
 
 @router.get("/api/products/{product_id}/deal-verdict")
