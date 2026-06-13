@@ -43,12 +43,17 @@ async def upload_marketplace_image(
             status_code=503,
             detail={'code': 'IMAGE_UPLOAD_UNAVAILABLE', 'message': 'Image upload is temporarily unavailable'},
         )
+    # Pre-envelope the response so ApiEnvelopeMiddleware passes it through
+    # unchanged (the middleware only wraps when the three envelope keys are absent).
     return {
         'success': True,
-        'url': url,
-        'publicId': result.get('public_id', ''),
-        'width': result.get('width'),
-        'height': result.get('height'),
+        'data': {
+            'url': url,
+            'publicId': result.get('public_id', ''),
+            'width': result.get('width'),
+            'height': result.get('height'),
+        },
+        'error': None,
     }
 
 
