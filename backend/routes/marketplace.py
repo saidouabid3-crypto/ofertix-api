@@ -20,25 +20,28 @@ async def upload_marketplace_image(
     if not file.content_type or file.content_type not in _IMAGE_ALLOWED_TYPES:
         raise HTTPException(
             status_code=400,
-            detail='Only JPEG, PNG, or WebP images are allowed',
+            detail={'code': 'INVALID_IMAGE_TYPE', 'message': 'Only JPEG, PNG, or WebP images are allowed'},
         )
     import io
     content = await file.read()
     if len(content) > _IMAGE_MAX_BYTES:
-        raise HTTPException(status_code=400, detail='Image must be under 5 MB')
+        raise HTTPException(
+            status_code=400,
+            detail={'code': 'IMAGE_TOO_LARGE', 'message': 'Image must be under 5 MB'},
+        )
     file.file = io.BytesIO(content)
     try:
         result = cloudinary_upload_service.upload_marketplace_image(file)
     except Exception:
         raise HTTPException(
             status_code=503,
-            detail='Image upload is temporarily unavailable',
+            detail={'code': 'IMAGE_UPLOAD_UNAVAILABLE', 'message': 'Image upload is temporarily unavailable'},
         )
     url = result.get('secure_url') or ''
     if not url:
         raise HTTPException(
             status_code=503,
-            detail='Image upload is temporarily unavailable',
+            detail={'code': 'IMAGE_UPLOAD_UNAVAILABLE', 'message': 'Image upload is temporarily unavailable'},
         )
     return {
         'success': True,
