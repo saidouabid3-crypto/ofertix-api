@@ -4,6 +4,7 @@ from core.auth import require_active_user
 from core.market_config import normalize_market
 from services.cloudinary_upload_service import cloudinary_upload_service
 from services.marketplace_service import MarketplaceService
+from schemas.marketplace_schema import MarketplaceValidationError
 
 router = APIRouter(prefix='/marketplace', tags=['marketplace'])
 service = MarketplaceService()
@@ -74,8 +75,16 @@ def list_marketplace_items(limit: int = Query(default=30, ge=1, le=100), country
 def create_marketplace_item(payload: Dict[str, Any], current_user: dict = Depends(require_active_user)):
     try:
         return service.create_item(payload, current_user=current_user)
+    except MarketplaceValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={'code': exc.code, 'message': exc.message},
+        )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(
+            status_code=400,
+            detail={'code': 'VALIDATION_ERROR', 'message': str(exc)},
+        )
 
 @router.get('/items/{item_id}')
 def get_marketplace_item(item_id: str):
@@ -84,29 +93,68 @@ def get_marketplace_item(item_id: str):
         raise HTTPException(status_code=404, detail='Marketplace item not found')
     return item
 
+def _update_my_marketplace_item(
+    item_id: str,
+    payload: Dict[str, Any],
+    current_user: dict,
+):
+    try:
+        item = service.update_item(item_id, payload, current_user=current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except MarketplaceValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={'code': exc.code, 'message': exc.message},
+        )
+    if not item:
+        raise HTTPException(status_code=404, detail='Marketplace item not found')
+    return item
+
+
+@router.patch('/my-items/{item_id}')
+def update_my_marketplace_item(
+    item_id: str,
+    payload: Dict[str, Any],
+    current_user: dict = Depends(require_active_user),
+):
+    return _update_my_marketplace_item(item_id, payload, current_user)
+
+
 @router.patch('/items/{item_id}')
 def update_marketplace_item(
     item_id: str,
     payload: Dict[str, Any],
     current_user: dict = Depends(require_active_user),
 ):
+    return _update_my_marketplace_item(item_id, payload, current_user)
+
+
+def _archive_my_marketplace_item(item_id: str, current_user: dict):
     try:
-        item = service.update_item(item_id, payload, current_user=current_user)
+        item = service.delete_item(item_id, current_user=current_user)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     if not item:
         raise HTTPException(status_code=404, detail='Marketplace item not found')
     return item
 
+
+@router.delete('/my-items/{item_id}')
+def archive_my_marketplace_item(
+    item_id: str,
+    current_user: dict = Depends(require_active_user),
+):
+    return _archive_my_marketplace_item(item_id, current_user)
+
+
 @router.delete('/items/{item_id}')
-def delete_marketplace_item(item_id: str, current_user: dict = Depends(require_active_user)):
-    try:
-        deleted = service.delete_item(item_id, current_user=current_user)
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
-    if not deleted:
-        raise HTTPException(status_code=404, detail='Marketplace item not found')
-    return {'ok': True, 'deleted': True}
+def delete_marketplace_item(
+    item_id: str,
+    current_user: dict = Depends(require_active_user),
+):
+    item = _archive_my_marketplace_item(item_id, current_user)
+    return {'ok': True, 'deleted': True, 'item': item}
 
 @router.post('/items/{item_id}/favorite')
 def favorite_marketplace_item(

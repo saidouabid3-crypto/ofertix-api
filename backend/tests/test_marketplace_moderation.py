@@ -9,6 +9,7 @@ Covers:
   - Seller profile item filtering (regression)
 """
 import os
+from types import MethodType
 
 import pytest
 from fastapi import HTTPException
@@ -90,6 +91,23 @@ def _make_marketplace_service(monkeypatch):
 
     svc = MarketplaceService.__new__(MarketplaceService)
     svc.repo = FakeRepo()
+    original_create = MarketplaceService.create_item
+
+    def create_with_valid_defaults(self, payload, current_user):
+        valid = {
+            'title': 'Test listing',
+            'description': 'A complete listing description',
+            'price': 25,
+            'countryCode': 'ES',
+            'city': 'Madrid',
+            'categoryKey': 'other',
+            'conditionKey': 'good',
+            'deliveryMethodKey': 'pickup',
+            'images': ['https://cdn.example.com/default.jpg'],
+        }
+        return original_create(self, {**valid, **payload}, current_user)
+
+    svc.create_item = MethodType(create_with_valid_defaults, svc)
     monkeypatch.setattr(
         svc_module,
         'profile_repository',
@@ -931,3 +949,306 @@ def test_my_items_does_not_include_other_users_items(monkeypatch):
     repo = MarketplaceRepository()
     items = repo.get_user_items('user-1')
     assert all(i['sellerId'] == 'user-1' for i in items)
+
+
+# Batch 16A: normalized seller write contract
+
+def _valid_listing(**overrides):
+    payload = {
+        'title': 'Vintage camera',
+        'description': 'A well cared for camera in working condition.',
+        'price': 125.50,
+        'countryCode': 'ES',
+        'city': 'Madrid',
+        'postalCode': '28001',
+        'area': 'Centro',
+        'categoryKey': 'electronics',
+        'conditionKey': 'good',
+        'deliveryMethodKey': 'both',
+        'images': [
+            'https://cdn.example.com/camera-front.jpg',
+            'https://cdn.example.com/camera-back.jpg',
+        ],
+        'coverImage': 'https://cdn.example.com/camera-back.jpg',
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_my_item_update_and_archive_routes_require_auth():
+    update_deps = _route_deps(
+        marketplace_routes.router,
+        '/marketplace/my-items/{item_id}',
+        'PATCH',
+    )
+    archive_deps = _route_deps(
+        marketplace_routes.router,
+        '/marketplace/my-items/{item_id}',
+        'DELETE',
+    )
+    assert require_active_user in update_deps
+    assert require_active_user in archive_deps
+
+
+@pytest.mark.parametrize(
+    ('field', 'value', 'code'),
+    [
+        ('title', '', 'INVALID_TITLE'),
+        ('description', '', 'INVALID_DESCRIPTION'),
+        ('price', 0, 'INVALID_PRICE'),
+        ('countryCode', 'XX', 'INVALID_COUNTRY_CODE'),
+        ('city', '', 'INVALID_CITY'),
+        ('categoryKey', 'unknown', 'INVALID_CATEGORY_KEY'),
+        ('conditionKey', 'broken', 'INVALID_CONDITION_KEY'),
+        ('deliveryMethodKey', 'teleport', 'INVALID_DELIVERY_METHOD_KEY'),
+        ('images', [], 'IMAGES_REQUIRED'),
+    ],
+)
+def test_listing_validation_rejects_invalid_fields(field, value, code):
+    from schemas.marketplace_schema import (
+        MarketplaceValidationError,
+        validate_and_normalize_listing,
+    )
+
+    with pytest.raises(MarketplaceValidationError) as exc:
+        validate_and_normalize_listing(_valid_listing(**{field: value}))
+    assert exc.value.code == code
+
+
+def test_listing_validation_normalizes_future_proof_fields():
+    from schemas.marketplace_schema import validate_and_normalize_listing
+
+    item = validate_and_normalize_listing(_valid_listing())
+    assert item['countryCode'] == 'ES'
+    assert item['currencyCode'] == 'EUR'
+    assert item['categoryKey'] == 'electronics'
+    assert item['conditionKey'] == 'good'
+    assert item['deliveryMethodKey'] == 'both'
+    assert item['coverImage'].endswith('camera-back.jpg')
+    assert item['imageCount'] == 2
+
+
+def test_approved_owner_edit_returns_listing_to_pending():
+    existing = {
+        **_valid_listing(),
+        'id': 'item-1',
+        'sellerId': 'owner-1',
+        'status': 'approved',
+        'isActive': True,
+        'visibleToUsers': True,
+        'currencyCode': 'EUR',
+        'countryName': 'Spain',
+        'currency': 'EUR',
+        'country': 'es',
+        'sellerCountryCode': 'es',
+        'category': 'electronics',
+        'condition': 'good',
+        'pickupOnly': False,
+        'availableCountries': ['es'],
+        'shipsTo': ['es'],
+        'image': 'https://cdn.example.com/camera-back.jpg',
+        'imageCount': 2,
+    }
+
+    class Repo:
+        def get_item(self, item_id):
+            return dict(existing)
+
+        def update_item(self, item_id, payload):
+            return {**existing, **payload, 'id': item_id}
+
+    svc = MarketplaceService.__new__(MarketplaceService)
+    svc.repo = Repo()
+    result = svc.update_item(
+        'item-1',
+        {'price': 130},
+        current_user={'uid': 'owner-1'},
+    )
+    assert result['status'] == 'pending'
+    assert result['isActive'] is False
+    assert result['visibleToUsers'] is False
+    assert result['approvedAt'] is None
+
+
+def test_non_owner_cannot_edit_or_archive():
+    class Repo:
+        def get_item(self, item_id):
+            return {'id': item_id, 'sellerId': 'owner-1', 'status': 'pending'}
+
+    svc = MarketplaceService.__new__(MarketplaceService)
+    svc.repo = Repo()
+    with pytest.raises(PermissionError):
+        svc.update_item(
+            'item-1',
+            _valid_listing(),
+            current_user={'uid': 'attacker'},
+        )
+    with pytest.raises(PermissionError):
+        svc.delete_item('item-1', current_user={'uid': 'attacker'})
+
+
+def test_missing_owner_fields_fail_closed():
+    class Repo:
+        def get_item(self, item_id):
+            return {'id': item_id, 'status': 'pending'}
+
+    svc = MarketplaceService.__new__(MarketplaceService)
+    svc.repo = Repo()
+    with pytest.raises(PermissionError):
+        svc.update_item(
+            'legacy-item',
+            _valid_listing(),
+            current_user={'uid': 'user-1'},
+        )
+
+
+def test_hidden_listing_cannot_be_edited():
+    class Repo:
+        def get_item(self, item_id):
+            return {
+                **_valid_listing(),
+                'id': item_id,
+                'sellerId': 'owner-1',
+                'status': 'hidden',
+            }
+
+    svc = MarketplaceService.__new__(MarketplaceService)
+    svc.repo = Repo()
+    with pytest.raises(ValueError, match='Hidden'):
+        svc.update_item(
+            'item-1',
+            {'price': 130},
+            current_user={'uid': 'owner-1'},
+        )
+
+
+def test_owner_archive_is_soft_and_not_public():
+    archived = {
+        'id': 'item-1',
+        'sellerId': 'owner-1',
+        'status': 'archived',
+        'isActive': False,
+        'visibleToUsers': False,
+    }
+
+    class Repo:
+        def get_item(self, item_id):
+            return {'id': item_id, 'sellerId': 'owner-1', 'status': 'approved'}
+
+        def archive_item(self, item_id):
+            return dict(archived)
+
+    svc = MarketplaceService.__new__(MarketplaceService)
+    svc.repo = Repo()
+    result = svc.delete_item('item-1', current_user={'uid': 'owner-1'})
+    assert result['status'] == 'archived'
+    assert not is_public_marketplace_item(result)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Batch 16A — Create blocker regression
+# POST /marketplace/items with realistic 16A payload must not return 500
+# ════════════════════════════════════════════════════════════════════════════
+
+_BATCH_16A_IMAGES = [
+    'https://res.cloudinary.com/ofertix/image/upload/v1/qa_img1.jpg',
+    'https://res.cloudinary.com/ofertix/image/upload/v1/qa_img2.jpg',
+    'https://res.cloudinary.com/ofertix/image/upload/v1/qa_img3.jpg',
+]
+
+
+def _batch_16a_payload(**overrides):
+    payload = {
+        'title': 'iPhone 13 mini',
+        'description': 'Well cared for device, minor scratch on back glass only.',
+        'price': 340.0,
+        'currencyCode': 'EUR',
+        'countryCode': 'ES',
+        'countryName': 'Spain',
+        'city': 'Igualada',
+        'postalCode': '08700',
+        'area': 'Anoia',
+        'approximateLocationLabel': 'Igualada, Anoia',
+        'categoryKey': 'electronics',
+        'conditionKey': 'like_new',
+        'deliveryMethodKey': 'both',
+        'images': list(_BATCH_16A_IMAGES),
+        'coverImage': _BATCH_16A_IMAGES[0],
+        'imageCount': 3,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_batch_16a_create_does_not_raise(monkeypatch):
+    """Realistic 16A payload with 3 Cloudinary URLs must not raise any exception."""
+    svc, captured = _make_marketplace_service(monkeypatch)
+    result = svc.create_item(_batch_16a_payload(), current_user={'uid': 'qa-user-16a'})
+    assert result is not None
+
+
+def test_batch_16a_create_status_pending(monkeypatch):
+    svc, captured = _make_marketplace_service(monkeypatch)
+    svc.create_item(_batch_16a_payload(), current_user={'uid': 'qa-user-16a'})
+    assert captured['status'] == 'pending'
+    assert captured['isActive'] is False
+    assert captured['visibleToUsers'] is False
+
+
+def test_batch_16a_create_ownership_from_auth(monkeypatch):
+    """sellerId/userId/ownerId must come from auth UID, not payload."""
+    svc, captured = _make_marketplace_service(monkeypatch)
+    svc.create_item(
+        _batch_16a_payload(sellerId='attacker', userId='attacker', ownerId='attacker'),
+        current_user={'uid': 'qa-user-16a'},
+    )
+    assert captured['sellerId'] == 'qa-user-16a'
+    assert captured['userId'] == 'qa-user-16a'
+    assert captured['ownerId'] == 'qa-user-16a'
+
+
+def test_batch_16a_create_images_preserved(monkeypatch):
+    svc, captured = _make_marketplace_service(monkeypatch)
+    svc.create_item(_batch_16a_payload(), current_user={'uid': 'qa-user-16a'})
+    assert len(captured['images']) == 3
+    assert captured['coverImage'] == _BATCH_16A_IMAGES[0]
+
+
+def test_batch_16a_create_cover_validates_against_images(monkeypatch):
+    """coverImage not in images list must raise validation error, not 500."""
+    svc, _ = _make_marketplace_service(monkeypatch)
+    with pytest.raises(Exception) as exc_info:
+        svc.create_item(
+            _batch_16a_payload(coverImage='https://res.cloudinary.com/ofertix/image/upload/v1/not_in_list.jpg'),
+            current_user={'uid': 'qa-user-16a'},
+        )
+    assert exc_info.value is not None
+
+
+def test_batch_16a_pending_item_not_public(monkeypatch):
+    """Created item must not be visible on the public listing endpoint."""
+    svc, captured = _make_marketplace_service(monkeypatch)
+    svc.create_item(_batch_16a_payload(), current_user={'uid': 'qa-user-16a'})
+    item_snapshot = {**captured, 'id': 'new-item'}
+    assert not is_public_marketplace_item(item_snapshot)
+
+
+def test_batch_16a_route_returns_400_not_500_for_invalid_country(monkeypatch):
+    """Invalid countryCode must return 400 via route, not 500."""
+    monkeypatch.setattr(marketplace_routes, 'service', marketplace_routes.service)
+    svc, _ = _make_marketplace_service(monkeypatch)
+
+    class _FakeService:
+        def create_item(self, payload, current_user):
+            from schemas.marketplace_schema import validate_and_normalize_listing
+            validate_and_normalize_listing(payload)
+
+    monkeypatch.setattr(marketplace_routes, 'service', _FakeService())
+    with pytest.raises(Exception) as exc_info:
+        marketplace_routes.create_marketplace_item(
+            _batch_16a_payload(countryCode='XX'),
+            current_user={'uid': 'qa-user-16a'},
+        )
+    from fastapi import HTTPException
+    assert isinstance(exc_info.value, HTTPException)
+    assert exc_info.value.status_code == 400

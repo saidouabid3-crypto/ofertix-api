@@ -22,6 +22,7 @@ SUPPORTED_MARKETS: dict[str, dict] = {
     "sa": {"name": "Saudi Arabia",          "currency": _c("SA", "SAR"), "languages": ["ar", "en"]},
     "ae": {"name": "United Arab Emirates",  "currency": _c("AE", "AED"), "languages": ["ar", "en"]},
     "mx": {"name": "Mexico",                "currency": _c("MX", "MXN"), "languages": ["es", "en"]},
+    "other": {"name": "Other",              "currency": "EUR", "languages": ["en", "es", "fr", "ar"]},
 }
 
 _ALIASES: dict[str, str] = {

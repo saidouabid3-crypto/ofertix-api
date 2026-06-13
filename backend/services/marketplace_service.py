@@ -1,9 +1,15 @@
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from repositories.marketplace_repository import MarketplaceRepository
 from repositories.profile_repository import profile_repository
-from core.market_config import normalize_market, SUPPORTED_MARKETS
+from core.market_config import normalize_market
+from schemas.marketplace_schema import (
+    IMPORTANT_LISTING_FIELDS,
+    MarketplaceValidationError,
+    validate_and_normalize_listing,
+)
 from utils.market_filter import item_available_for_country, normalize_item_market_fields
 
 _BLOCKED_URL_SCHEMES = ('data:', 'file://', 'blob:')
@@ -62,15 +68,14 @@ class MarketplaceService:
     def create_item(self, payload: Dict[str, Any], current_user: dict):
         user_id = str(current_user.get('uid') or '').strip()
         if not user_id:
-            raise ValueError('Authenticated user is required')
-        market = normalize_market(payload.get('sellerCountryCode') or payload.get('country') or 'es')
-        payload['sellerCountryCode'] = market
-        payload['country'] = market
-        payload['countryCode'] = market
-        payload['currency'] = payload.get('currency') or SUPPORTED_MARKETS[market]['currency']
-        payload.setdefault('availableCountries', [market])
-        payload.setdefault('shipsTo', [] if payload.get('pickupOnly', True) else [market])
-        payload.setdefault('pickupOnly', True)
+            raise MarketplaceValidationError(
+                'AUTHENTICATION_REQUIRED',
+                'Authenticated user is required',
+            )
+        payload = {
+            **payload,
+            **validate_and_normalize_listing(payload),
+        }
         payload['sellerId'] = user_id
         payload['userId'] = user_id
         payload['ownerId'] = user_id
@@ -79,6 +84,13 @@ class MarketplaceService:
         payload['status'] = 'pending'
         payload['isActive'] = False
         payload['visibleToUsers'] = False
+        payload['viewCount'] = 0
+        payload['favoriteCount'] = 0
+        payload['reportCount'] = 0
+        payload['approvedAt'] = None
+        payload['rejectedAt'] = None
+        payload['archivedAt'] = None
+        payload['rejectionReason'] = None
         # Strip moderation/trust fields the user must not control.
         for _field in ('isFeatured', 'isSponsored', 'sellerBanned', 'isSellerBanned',
                        'sellerBlocked', 'moderationStatus', 'sellerStatus', 'adminIssue'):
@@ -115,28 +127,60 @@ class MarketplaceService:
     def get_my_items(self, user_id: str, limit: int = 50):
         return self.repo.get_user_items(user_id, limit=limit)
 
-    def _assert_owner(self, item_id: str, current_user: dict) -> None:
+    def _assert_owner(self, item_id: str, current_user: dict) -> Optional[Dict[str, Any]]:
         item = self.repo.get_item(item_id)
         if not item:
-            return
+            return None
         user_id = str(current_user.get('uid') or '').strip()
         owners = {
             str(item.get(key) or '').strip()
             for key in ('ownerId', 'userId', 'sellerId', 'creatorId')
         }
         owners.discard('')
-        if owners and user_id not in owners:
+        if not owners or user_id not in owners:
             raise PermissionError('You can only modify your own marketplace items')
+        return item
 
     def update_item(self, item_id: str, payload: Dict[str, Any], current_user: dict):
-        self._assert_owner(item_id, current_user)
-        for protected_key in ('ownerId', 'userId', 'sellerId', 'creatorId'):
-            payload.pop(protected_key, None)
-        return self.repo.update_item(item_id, payload)
+        existing = self._assert_owner(item_id, current_user)
+        if not existing:
+            return None
+        status = str(existing.get('status') or '').strip().lower()
+        if status in {'archived', 'deleted'}:
+            raise MarketplaceValidationError(
+                'LISTING_ARCHIVED',
+                'Archived listings cannot be edited',
+            )
+        if status == 'hidden':
+            raise MarketplaceValidationError(
+                'LISTING_HIDDEN',
+                'Hidden listings cannot be edited until restored by moderation',
+            )
+
+        merged = {**existing, **payload}
+        normalized = validate_and_normalize_listing(merged)
+        changed_important = any(
+            normalized.get(key) != existing.get(key)
+            for key in IMPORTANT_LISTING_FIELDS
+        )
+        update = dict(normalized)
+        update['editedAt'] = datetime.now(timezone.utc)
+        if changed_important and status in {'approved', 'active', 'published', 'rejected'}:
+            update.update({
+                'status': 'pending',
+                'isActive': False,
+                'visibleToUsers': False,
+                'approvedAt': None,
+                'rejectedAt': None,
+                'rejectionReason': None,
+            })
+        return self.repo.update_item(item_id, update)
 
     def delete_item(self, item_id: str, current_user: dict):
-        self._assert_owner(item_id, current_user)
-        return self.repo.delete_item(item_id)
+        existing = self._assert_owner(item_id, current_user)
+        if not existing:
+            return None
+        return self.repo.archive_item(item_id)
 
     def favorite_item(self, item_id: str, user_id: str):
         return self.repo.favorite_item(item_id, user_id)

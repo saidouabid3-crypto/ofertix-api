@@ -21,7 +21,10 @@ BLOCKED_MARKETPLACE_STATUSES = {
 
 
 def _with_id(doc) -> Dict[str, Any]:
-    data = enrich_country_fields(doc.to_dict() or {})
+    raw = doc.to_dict() or {}
+    data = enrich_country_fields(raw)
+    if raw.get('countryCode'):
+        data['countryCode'] = str(raw['countryCode']).upper()
     data['id'] = doc.id
     return data
 
@@ -98,9 +101,14 @@ class MarketplaceRepository:
             'isSponsored': payload.get('isSponsored', False),
             'views': int(payload.get('views', 0) or 0),
             'favorites': int(payload.get('favorites', 0) or 0),
+            'viewCount': int(payload.get('viewCount', 0) or 0),
+            'favoriteCount': int(payload.get('favoriteCount', 0) or 0),
+            'reportCount': int(payload.get('reportCount', 0) or 0),
             'createdAt': payload.get('createdAt') or now,
             'updatedAt': now,
         })
+        if payload.get('countryCode'):
+            data['countryCode'] = str(payload['countryCode']).upper()
         ref = db.collection(COLLECTION).document()
         ref.set(data)
         data['id'] = ref.id
@@ -161,12 +169,22 @@ class MarketplaceRepository:
         ref.update(payload)
         return self.get_item(item_id)
 
-    def delete_item(self, item_id: str) -> bool:
+    def archive_item(self, item_id: str) -> Optional[Dict[str, Any]]:
         ref = db.collection(COLLECTION).document(item_id)
         if not ref.get().exists:
-            return False
-        ref.update({'isActive': False, 'status': 'deleted', 'deletedAt': datetime.now(timezone.utc)})
-        return True
+            return None
+        now = datetime.now(timezone.utc)
+        ref.update({
+            'isActive': False,
+            'visibleToUsers': False,
+            'status': 'archived',
+            'archivedAt': now,
+            'updatedAt': now,
+        })
+        return self.get_item(item_id)
+
+    def delete_item(self, item_id: str) -> bool:
+        return self.archive_item(item_id) is not None
 
     def favorite_item(self, item_id: str, user_id: str) -> Dict[str, Any]:
         fav_id = f'{item_id}_{user_id}'
@@ -175,7 +193,10 @@ class MarketplaceRepository:
             'userId': user_id,
             'createdAt': datetime.now(timezone.utc),
         }, merge=True)
-        db.collection(COLLECTION).document(item_id).update({'favorites': firestore_increment(1)})
+        db.collection(COLLECTION).document(item_id).update({
+            'favorites': firestore_increment(1),
+            'favoriteCount': firestore_increment(1),
+        })
         return {'ok': True, 'itemId': item_id, 'userId': user_id}
 
     def report_item(self, item_id: str, user_id: str, reason: str) -> Dict[str, Any]:
@@ -186,6 +207,9 @@ class MarketplaceRepository:
             'reason': reason,
             'status': 'open',
             'createdAt': datetime.now(timezone.utc),
+        })
+        db.collection(COLLECTION).document(item_id).update({
+            'reportCount': firestore_increment(1),
         })
         return {'ok': True, 'reportId': ref.id}
 

@@ -332,8 +332,15 @@ def test_marketplace_create_item_forces_pending_and_inactive(monkeypatch):
 
     payload = {
         'title': 'Test item',
+        'description': 'A complete marketplace listing description.',
         'price': 50,
-        'status': 'active',        # attacker-supplied — must be overridden
+        'countryCode': 'ES',
+        'city': 'Madrid',
+        'categoryKey': 'other',
+        'conditionKey': 'good',
+        'deliveryMethodKey': 'pickup',
+        'images': ['https://cdn.example.com/item.jpg'],
+            'status': 'active',        # attacker-supplied — must be overridden
         'isActive': True,          # attacker-supplied — must be overridden
         'isFeatured': True,        # must be stripped
         'isSponsored': True,       # must be stripped
