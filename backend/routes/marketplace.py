@@ -1,7 +1,9 @@
+import asyncio
 from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from core.auth import require_active_user
 from core.market_config import normalize_market
+from services.catalog_edge_cache import catalog_cache, MARKETPLACE_FRESH_TTL, MARKETPLACE_STALE_TTL
 from services.cloudinary_upload_service import cloudinary_upload_service
 from services.marketplace_service import MarketplaceService
 from schemas.marketplace_schema import MarketplaceValidationError
@@ -68,8 +70,36 @@ def get_my_marketplace_items(
 
 
 @router.get('/items')
-def list_marketplace_items(limit: int = Query(default=30, ge=1, le=100), country: str = Query(default='es'), city: Optional[str] = None, category: Optional[str] = None):
-    return {'items': service.list_items(limit=limit, city=city, category=category, country=normalize_market(country))}
+async def list_marketplace_items(
+    limit: int = Query(default=30, ge=1, le=100),
+    country: str = Query(default='es'),
+    city: Optional[str] = None,
+    category: Optional[str] = None,
+):
+    # Read governor: cap at 40 to reduce Firestore reads per request.
+    effective_limit = min(limit, 40)
+    market = normalize_market(country)
+    key = catalog_cache.build_key(
+        'marketplace',
+        country=market,
+        city=city or None,
+        category=category or None,
+        limit=effective_limit,
+    )
+
+    async def _load() -> dict:
+        items = await asyncio.to_thread(
+            service.list_items,
+            limit=effective_limit,
+            city=city,
+            category=category,
+            country=country,
+        )
+        return {'items': items}
+
+    return await catalog_cache.get_or_load(
+        key, _load, fresh_ttl=MARKETPLACE_FRESH_TTL, stale_ttl=MARKETPLACE_STALE_TTL
+    )
 
 @router.post('/items')
 def create_marketplace_item(payload: Dict[str, Any], current_user: dict = Depends(require_active_user)):

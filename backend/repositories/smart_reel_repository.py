@@ -15,13 +15,16 @@ class SmartReelRepository:
     REPORTS_COLLECTION = 'reel_reports'
 
     def __init__(self):
-        self.collection = db.collection(self.COLLECTION)
-        self.comments_collection = db.collection(self.COMMENTS_COLLECTION)
-        self.follows_collection = db.collection(self.FOLLOWS_COLLECTION)
-        self.messages_collection = db.collection(self.MESSAGES_COLLECTION)
-        self.likes_collection = db.collection(self.LIKES_COLLECTION)
-        self.saves_collection = db.collection(self.SAVES_COLLECTION)
-        self.reports_collection = db.collection(self.REPORTS_COLLECTION)
+        def _coll(name: str):
+            return db.collection(name) if db is not None else None  # type: ignore[union-attr]
+
+        self.collection = _coll(self.COLLECTION)
+        self.comments_collection = _coll(self.COMMENTS_COLLECTION)
+        self.follows_collection = _coll(self.FOLLOWS_COLLECTION)
+        self.messages_collection = _coll(self.MESSAGES_COLLECTION)
+        self.likes_collection = _coll(self.LIKES_COLLECTION)
+        self.saves_collection = _coll(self.SAVES_COLLECTION)
+        self.reports_collection = _coll(self.REPORTS_COLLECTION)
 
     def create(self, data: dict) -> dict:
         now = datetime.utcnow().isoformat()

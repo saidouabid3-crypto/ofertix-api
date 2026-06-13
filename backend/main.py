@@ -83,6 +83,35 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(status_code=exc.status_code, content=error_payload(message, data=detail if isinstance(detail, dict) else None))
 
 
+async def _firestore_quota_response(request: Request, exc: Exception) -> JSONResponse:
+    logger.warning("Firestore quota/availability error at %s: %s", request.url.path, type(exc).__name__)
+    return JSONResponse(
+        status_code=503,
+        content=error_payload(
+            "Ofertix data service is temporarily busy. Please try again later.",
+            data={
+                "code": "FIRESTORE_QUOTA_EXCEEDED",
+                "detail": "Firestore quota exceeded",
+                "path": str(request.url.path),
+                "retryable": True,
+            },
+        ),
+    )
+
+
+try:
+    from google.api_core.exceptions import (
+        DeadlineExceeded as _FirestoreDeadlineExceeded,
+        ResourceExhausted as _FirestoreResourceExhausted,
+        ServiceUnavailable as _FirestoreServiceUnavailable,
+    )
+    app.add_exception_handler(_FirestoreResourceExhausted, _firestore_quota_response)
+    app.add_exception_handler(_FirestoreDeadlineExceeded, _firestore_quota_response)
+    app.add_exception_handler(_FirestoreServiceUnavailable, _firestore_quota_response)
+except ImportError:
+    pass  # google-cloud-firestore not installed; safe to skip
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled error at %s: %s", request.url.path, exc)

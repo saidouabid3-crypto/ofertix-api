@@ -24,15 +24,19 @@ except ImportError:  # pragma: no cover
     _STALE_TRIGGER = (Exception,)  # type: ignore[assignment]
 
 # ─── TTL policy (seconds) ─────────────────────────────────────────────────────
-PRODUCTS_FRESH_TTL   = 600    # 10 min
-PRODUCTS_STALE_TTL   = 86400  # 24 h
-SEARCH_FRESH_TTL     = 300    # 5 min
-SEARCH_STALE_TTL     = 21600  # 6 h
-TRENDING_FRESH_TTL   = 900    # 15 min
-TRENDING_STALE_TTL   = 86400  # 24 h
-HOME_FEED_FRESH_TTL  = 600    # 10 min
-HOME_FEED_STALE_TTL  = 86400  # 24 h
-NEGATIVE_CACHE_TTL   = 60     # empty result — very short
+PRODUCTS_FRESH_TTL    = 600    # 10 min
+PRODUCTS_STALE_TTL    = 86400  # 24 h
+SEARCH_FRESH_TTL      = 300    # 5 min
+SEARCH_STALE_TTL      = 21600  # 6 h
+TRENDING_FRESH_TTL    = 900    # 15 min
+TRENDING_STALE_TTL    = 86400  # 24 h
+HOME_FEED_FRESH_TTL   = 600    # 10 min
+HOME_FEED_STALE_TTL   = 86400  # 24 h
+MARKETPLACE_FRESH_TTL = 300    # 5 min
+MARKETPLACE_STALE_TTL = 21600  # 6 h
+REELS_FRESH_TTL       = 120    # 2 min
+REELS_STALE_TTL       = 7200   # 2 h
+NEGATIVE_CACHE_TTL    = 60     # empty result — very short
 
 _JITTER_FACTOR = 0.15         # ±15 %
 _MAX_MEM_ENTRIES = 500

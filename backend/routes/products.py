@@ -14,6 +14,7 @@ from services.catalog_edge_cache import (
     HOME_FEED_FRESH_TTL, HOME_FEED_STALE_TTL,
     PRODUCTS_FRESH_TTL, PRODUCTS_STALE_TTL,
     SEARCH_FRESH_TTL, SEARCH_STALE_TTL,
+    safe_stream,
 )
 from services.deal_verdict_service import analyze_deal_verdict
 from services.public_catalog_policy import evaluate_public_product, load_catalog_config
@@ -45,17 +46,20 @@ def _stream_products(read_limit: int) -> list[dict]:
     # The visibleToUsers FieldFilter requires a Firestore composite index.
     # If the index is absent Firestore raises FailedPrecondition; fall back to
     # a full-collection scan and filter in Python.
-    # All other errors (quota, auth) propagate so callers get an honest 5xx
-    # rather than a silent empty list that looks like "no products".
+    # Quota/deadline errors propagate so callers get an honest 5xx (or stale
+    # cache) rather than a silent empty list that looks like "no products".
     try:
-        docs = list(
-            db.collection("products")
-            .where(filter=FieldFilter("visibleToUsers", "==", True))
-            .limit(read_limit)
-            .stream()
+        docs = safe_stream(
+            db.collection("products").where(filter=FieldFilter("visibleToUsers", "==", True)),
+            limit=read_limit,
+            context="products_public",
         )
     except FailedPrecondition:
-        docs = list(db.collection("products").limit(read_limit).stream())
+        docs = safe_stream(
+            db.collection("products"),
+            limit=read_limit,
+            context="products_fallback",
+        )
     return [{"id": doc.id, **(doc.to_dict() or {})} for doc in docs]
 
 
@@ -152,7 +156,8 @@ async def get_products(
     store: str | None = None,
 ):
     market = normalize_market(country)
-    read_limit = min(max(limit * 6, 240), 1000)
+    limit = min(limit, 40)  # read governor: cap display limit
+    read_limit = min(max(limit * 6, 120), 300)  # cap Firestore reads
     wanted_category = (category or "").strip().lower()
     wanted_store = (store or "").strip().lower()
 
@@ -212,8 +217,8 @@ async def search_products(payload: ProductSearchRequest):
     q = payload.query.strip()
     wanted_category = (payload.category or "").strip().lower()
     wanted_store = (payload.store or "").strip().lower()
-    limit = max(1, min(payload.limit, 200))
-    read_limit = min(max(limit * 8, 300), 800)
+    limit = max(1, min(payload.limit, 40))  # read governor: cap display limit
+    read_limit = min(max(limit * 6, 120), 300)  # cap Firestore reads
     sort_mode = payload.sort if payload.sort in (
         "smart", "discount_desc", "price_asc", "price_desc", "newest", "trusted"
     ) else "smart"
