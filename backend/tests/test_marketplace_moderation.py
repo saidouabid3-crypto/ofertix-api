@@ -674,3 +674,79 @@ def test_normalize_and_validate_images_accepts_gallery_field():
     _normalize_and_validate_images(payload)
     assert payload['images'] == ['https://cdn.example.com/a.jpg']
     assert payload.get('image') == 'https://cdn.example.com/a.jpg'
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Batch 15C-C — my-items owner endpoint
+# ════════════════════════════════════════════════════════════════════════════
+
+def test_my_items_endpoint_requires_auth():
+    deps = _route_deps(marketplace_routes.router, '/marketplace/my-items', 'GET')
+    assert require_active_user in deps
+
+
+def test_my_items_returns_own_items_including_pending(monkeypatch):
+    class _FakeDoc:
+        def __init__(self, item_id, data):
+            self.id = item_id
+            self._data = data
+        def to_dict(self):
+            return dict(self._data)
+
+    class _FakeQuery:
+        def where(self, *a):
+            return self
+        def limit(self, n):
+            return self
+        def stream(self):
+            return [
+                _FakeDoc('item-approved', {'sellerId': 'user-1', 'status': 'approved', 'isActive': True}),
+                _FakeDoc('item-pending', {'sellerId': 'user-1', 'status': 'pending', 'isActive': False}),
+                _FakeDoc('item-rejected', {'sellerId': 'user-1', 'status': 'rejected', 'isActive': False}),
+            ]
+
+    class _FakeDb:
+        def collection(self, name):
+            return _FakeQuery()
+
+    monkeypatch.setattr('repositories.marketplace_repository.db', _FakeDb())
+    from repositories.marketplace_repository import MarketplaceRepository
+    repo = MarketplaceRepository()
+    items = repo.get_user_items('user-1')
+    statuses = {i['status'] for i in items}
+    assert 'approved' in statuses
+    assert 'pending' in statuses
+    assert 'rejected' in statuses
+
+
+def test_my_items_does_not_include_other_users_items(monkeypatch):
+    class _FakeDoc:
+        def __init__(self, item_id, seller_id):
+            self.id = item_id
+            self._data = {'sellerId': seller_id, 'status': 'approved'}
+        def to_dict(self):
+            return dict(self._data)
+
+    class _FakeQuery:
+        def __init__(self, seller_filter):
+            self._filter = seller_filter
+        def where(self, field, op, value):
+            return _FakeQuery(value)
+        def limit(self, n):
+            return self
+        def stream(self):
+            return [_FakeDoc('own', self._filter)]
+
+    class _FakeColl:
+        def where(self, field, op, value):
+            return _FakeQuery(value)
+
+    class _FakeDb:
+        def collection(self, name):
+            return _FakeColl()
+
+    monkeypatch.setattr('repositories.marketplace_repository.db', _FakeDb())
+    from repositories.marketplace_repository import MarketplaceRepository
+    repo = MarketplaceRepository()
+    items = repo.get_user_items('user-1')
+    assert all(i['sellerId'] == 'user-1' for i in items)

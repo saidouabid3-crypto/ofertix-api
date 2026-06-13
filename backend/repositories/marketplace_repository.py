@@ -116,6 +116,22 @@ class MarketplaceRepository:
             return None
         return item
 
+    def get_user_items(self, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return all items belonging to the authenticated seller (incl. pending/hidden)."""
+        user_id = (user_id or '').strip()
+        if not user_id:
+            return []
+        limit = max(1, min(limit, 100))
+        docs = list(
+            db.collection(COLLECTION)
+            .where('sellerId', '==', user_id)
+            .limit(limit)
+            .stream()
+        )
+        items = [_with_id(doc) for doc in docs]
+        items.sort(key=lambda x: str(x.get('createdAt') or ''), reverse=True)
+        return items
+
     def update_item(self, item_id: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         ref = db.collection(COLLECTION).document(item_id)
         if not ref.get().exists:

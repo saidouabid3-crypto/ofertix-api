@@ -98,6 +98,9 @@ class MarketplaceService:
     def get_public_item(self, item_id: str):
         return self.repo.get_public_item(item_id)
 
+    def get_my_items(self, user_id: str, limit: int = 50):
+        return self.repo.get_user_items(user_id, limit=limit)
+
     def _assert_owner(self, item_id: str, current_user: dict) -> None:
         item = self.repo.get_item(item_id)
         if not item:

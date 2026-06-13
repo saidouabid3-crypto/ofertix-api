@@ -57,6 +57,15 @@ async def upload_marketplace_image(
     }
 
 
+@router.get('/my-items')
+def get_my_marketplace_items(
+    limit: int = Query(default=50, ge=1, le=100),
+    current_user: dict = Depends(require_active_user),
+):
+    """Return authenticated seller's own items including pending/hidden (owner-only view)."""
+    return {'items': service.get_my_items(current_user['uid'], limit=limit)}
+
+
 @router.get('/items')
 def list_marketplace_items(limit: int = Query(default=30, ge=1, le=100), country: str = Query(default='es'), city: Optional[str] = None, category: Optional[str] = None):
     return {'items': service.list_items(limit=limit, city=city, category=category, country=normalize_market(country))}
