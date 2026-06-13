@@ -27,43 +27,84 @@ COUNTRY_ALIASES = {
 _REPORT_COLLECTIONS = ['reel_reports', 'item_reports', 'marketplace_reports', 'product_reports']
 
 
-def _safe_aggregate_count(collection: str, fallback_limit: int = 2000) -> int:
+import logging as _logging
+_admin_logger = _logging.getLogger("ofertix.admin_reads")
+
+# Fallback stream caps — used only when the count() aggregation API fails.
+# count() costs 1 read per call; stream() costs 1 read per document.
+_COUNT_FALLBACK_LIMIT = 100   # was 2000 — admin stats with ±100 accuracy are fine
+_WHERE_FALLBACK_LIMIT = 100   # was 2000 — same
+_SUM_FALLBACK_LIMIT   = 50    # was 500  — revenue/click sums are estimates anyway
+
+
+def _safe_aggregate_count(collection: str, fallback_limit: int = _COUNT_FALLBACK_LIMIT) -> int:
+    """Count documents using aggregation query (1 read) with bounded stream fallback."""
     try:
         query = db.collection(collection).count()
         result = query.get()
         if result and result[0]:
-            value = getattr(result[0], 'value', None)
+            # SDK returns list-of-list or AggregationResult depending on version
+            row = result[0]
+            value = getattr(row, 'value', None)
+            if value is None and isinstance(row, (list, tuple)) and row:
+                value = getattr(row[0], 'value', None)
             if isinstance(value, int):
                 return value
-            data = result[0][0].value if isinstance(result[0], list) else None
-            if isinstance(data, int):
-                return data
     except Exception:
         pass
 
     try:
-        return sum(1 for _ in db.collection(collection).limit(fallback_limit).stream())
+        count = sum(1 for _ in db.collection(collection).limit(fallback_limit).stream())
+        _admin_logger.debug(
+            "[ReadGovernor] admin count fallback collection=%s limit=%d counted=%d",
+            collection, fallback_limit, count,
+        )
+        return count
     except Exception:
         return 0
 
 
-def _safe_count_where(collection: str, field: str, value: Any, limit: int = 2000) -> int:
+def _safe_count_where(collection: str, field: str, value: Any, limit: int = _WHERE_FALLBACK_LIMIT) -> int:
+    """Count filtered documents using aggregation query (1 read) with bounded stream fallback."""
     try:
-        return sum(
+        query = db.collection(collection).where(field, '==', value).count()
+        result = query.get()
+        if result and result[0]:
+            row = result[0]
+            agg_val = getattr(row, 'value', None)
+            if agg_val is None and isinstance(row, (list, tuple)) and row:
+                agg_val = getattr(row[0], 'value', None)
+            if isinstance(agg_val, int):
+                return agg_val
+    except Exception:
+        pass
+
+    try:
+        count = sum(
             1 for _ in db.collection(collection).where(field, '==', value).limit(limit).stream()
         )
+        _admin_logger.debug(
+            "[ReadGovernor] admin where-count fallback collection=%s field=%s limit=%d counted=%d",
+            collection, field, limit, count,
+        )
+        return count
     except Exception:
         return 0
 
 
-def _safe_sum(collection: str, field: str, limit: int = 500) -> float:
+def _safe_sum(collection: str, field: str, limit: int = _SUM_FALLBACK_LIMIT) -> float:
+    """Sum a numeric field across a small bounded sample (estimate, not exact)."""
     total = 0.0
     try:
         for doc in db.collection(collection).limit(limit).stream():
             data = doc.to_dict() or {}
-            value = data.get(field, 0) or 0
-            if isinstance(value, (int, float)):
-                total += float(value)
+            val = data.get(field, 0) or 0
+            if isinstance(val, (int, float)):
+                total += float(val)
+        _admin_logger.debug(
+            "[ReadGovernor] admin sum collection=%s field=%s limit=%d",
+            collection, field, limit,
+        )
     except Exception:
         return 0.0
     return total

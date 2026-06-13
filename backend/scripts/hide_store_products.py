@@ -46,9 +46,33 @@ def main():
     parser.add_argument("--store", default="AliExpress", help="Store/source to hide. Defaults to AliExpress.")
     parser.add_argument("--dry-run", action="store_true", default=True, help="Only count matched docs, do not update")
     parser.add_argument("--apply", action="store_true", help="Archive matched docs. Without this flag the script is dry-run only.")
-    parser.add_argument("--limit", type=int, default=0, help="Optional max docs to scan")
+    parser.add_argument(
+        "--limit", type=int, default=500,
+        help="Max docs to scan (default 500). Use --confirm-full-scan to remove cap.",
+    )
+    parser.add_argument(
+        "--confirm-full-scan", action="store_true",
+        help="DANGER: scan entire collection. Costs 1 read per document.",
+    )
     args = parser.parse_args()
     dry_run = not args.apply
+
+    if not args.confirm_full_scan and args.limit <= 0:
+        import sys
+        print(
+            "[ReadGuard] Refusing unbounded Firestore scan. "
+            "Pass --limit N or --confirm-full-scan.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if args.confirm_full_scan:
+        import sys
+        print(
+            "[ReadGuard] WARNING: --confirm-full-scan active. "
+            "This will read the entire products collection.",
+            file=sys.stderr,
+        )
 
     scanned = 0
     matched = 0
@@ -59,7 +83,8 @@ def main():
     now = datetime.now(timezone.utc)
     issue = f"removed_{args.store.strip().lower().replace(' ', '_')}_store"
 
-    for doc in db.collection("products").stream():
+    _query = db.collection("products") if args.confirm_full_scan else db.collection("products").limit(args.limit)
+    for doc in _query.stream():
         scanned += 1
         data = doc.to_dict() or {}
 
@@ -91,7 +116,7 @@ def main():
                 else:
                     updated += 1
 
-        if args.limit and scanned >= args.limit:
+        if not args.confirm_full_scan and args.limit and scanned >= args.limit:
             break
 
     if not dry_run:

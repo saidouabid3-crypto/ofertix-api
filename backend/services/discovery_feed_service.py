@@ -9,6 +9,7 @@ from google.api_core.exceptions import FailedPrecondition
 
 from core.firebase import db
 from core.market_config import SUPPORTED_MARKETS, normalize_market
+from services.catalog_edge_cache import safe_stream
 from services.public_product_service import is_usable_public_product, prepare_public_product
 
 _QUARANTINED = {'quarantined', 'blocked', 'rejected', 'hidden'}
@@ -225,23 +226,28 @@ def _take_pool(
 def _fetch_usable_products(market: str, read_limit: int) -> list[dict[str, Any]]:
     """
     Fetch and normalize products from Firestore using the same public eligibility
-    pipeline as /products, so global products and all status variants are treated
-    identically in both endpoints.
+    pipeline as /products.
 
-    Key fix (Batch 14A-A): previously used normalize_product() directly, which
-    overwrites status/visibleToUsers on low-confidence products. prepare_public_product()
-    restores the original Firestore values for those fields after normalization, matching
-    the /products behavior.
+    Read governor: read_limit is capped by the caller (build_discovery_feed).
+    safe_stream enforces the limit and propagates ResourceExhausted so the
+    cache layer can serve stale data instead of returning an empty feed.
     """
     try:
-        docs = list(
-            db.collection('products')
-            .where('visibleToUsers', '==', True)
-            .limit(read_limit)
-            .stream()
+        docs = safe_stream(
+            db.collection('products').where('visibleToUsers', '==', True),
+            limit=read_limit,
+            context='discovery_feed',
+            route='/home-feed',
+            collection='products',
         )
     except FailedPrecondition:
-        docs = list(db.collection('products').limit(read_limit).stream())
+        docs = safe_stream(
+            db.collection('products'),
+            limit=read_limit,
+            context='discovery_feed_fallback',
+            route='/home-feed',
+            collection='products',
+        )
 
     products: list[dict[str, Any]] = []
     for doc in docs:
@@ -280,7 +286,9 @@ def build_discovery_feed(
     """
     market = normalize_market(country)
     seen_set: set[str] = set((seen_ids or [])[:50])
-    read_limit = max(300, min(900, limit * 12))
+    # Read governor: was max(300, min(900, limit * 12)) = 480 reads for limit=40.
+    # Reduced to min(200, max(60, limit * 3)) = 120 reads for limit=40 (4x reduction).
+    read_limit = min(200, max(60, limit * 3))
 
     all_products = _fetch_usable_products(market, read_limit)
 

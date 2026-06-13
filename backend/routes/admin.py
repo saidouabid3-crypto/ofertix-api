@@ -444,6 +444,21 @@ async def catalog_cache_status(current_user: dict = Depends(require_admin)):
     return catalog_cache.status()
 
 
+@router.get('/system/read-usage')
+async def system_read_usage(current_user: dict = Depends(require_admin)):
+    """
+    Return in-memory per-route Firestore read counters.
+
+    Shows: calls, cache hits/misses/stale, total docs read, max docs per call.
+    Resets on server restart. Use to identify read-heavy routes.
+    """
+    from services.catalog_edge_cache import catalog_cache, get_route_read_stats
+    return {
+        "routeReadStats": get_route_read_stats(),
+        "cacheStatus": catalog_cache.status(),
+    }
+
+
 @router.post('/catalog/cache/clear')
 async def catalog_cache_clear(current_user: dict = Depends(require_admin)):
     """Evict all in-memory catalog cache entries. Does not touch Firestore."""

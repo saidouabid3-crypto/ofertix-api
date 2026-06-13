@@ -288,20 +288,92 @@ catalog_cache = CatalogEdgeCache()
 
 # ─── Read governor ─────────────────────────────────────────────────────────────
 
-def safe_stream(query: Any, *, limit: int, context: str = "") -> list[Any]:
+_rg_logger = logging.getLogger("ofertix.read_governor")
+
+# Per-route in-memory read counters for forensics (rolling, not persisted).
+_route_read_stats: dict[str, dict[str, Any]] = {}
+
+
+def _update_route_stats(route: str, docs_returned: int, cache_status: str) -> None:
+    if route not in _route_read_stats:
+        _route_read_stats[route] = {
+            "calls": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "stale_serves": 0,
+            "docs_returned_total": 0,
+            "docs_returned_last": 0,
+            "max_docs_returned": 0,
+            "last_error_code": None,
+        }
+    s = _route_read_stats[route]
+    s["calls"] += 1
+    s["docs_returned_total"] += docs_returned
+    s["docs_returned_last"] = docs_returned
+    s["max_docs_returned"] = max(s["max_docs_returned"], docs_returned)
+    if cache_status == "hit":
+        s["cache_hits"] += 1
+    elif cache_status == "stale":
+        s["stale_serves"] += 1
+    else:
+        s["cache_misses"] += 1
+
+
+def get_route_read_stats() -> dict[str, dict[str, Any]]:
+    """Return a snapshot of in-memory read counters per route."""
+    return {route: dict(stats) for route, stats in _route_read_stats.items()}
+
+
+def read_budget_guard(
+    route: str,
+    requested_limit: int,
+    *,
+    max_client_limit: int,
+    max_firestore_reads: int,
+) -> tuple[int, int]:
+    """
+    Enforce a per-route read budget.
+
+    Returns (effective_display_limit, effective_firestore_reads) after clamping.
+    Logs a warning if clamping was necessary.
+    """
+    display_limit = min(requested_limit, max_client_limit)
+    if display_limit != requested_limit:
+        _rg_logger.warning(
+            "[ReadGovernor] route=%s requested_limit=%d clamped to %d",
+            route, requested_limit, display_limit,
+        )
+    firestore_limit = min(max(display_limit * 3, 60), max_firestore_reads)
+    return display_limit, firestore_limit
+
+
+def safe_stream(
+    query: Any,
+    *,
+    limit: int,
+    context: str = "",
+    route: str = "",
+    collection: str = "",
+) -> list[Any]:
     """
     Execute a bounded Firestore query and return a list of DocumentSnapshots.
 
-    Always requires a positive ``limit`` to prevent unbounded collection scans.
-    Passing ``limit <= 0`` raises ``ValueError`` immediately.  Estimated read
-    count is logged at DEBUG level for quota auditing.
+    Requires a positive ``limit``.  ``limit <= 0`` raises ``ValueError``
+    immediately so callers can never accidentally trigger a full collection scan.
+
+    Wraps the iteration in a try/except so ResourceExhausted raised DURING
+    document streaming is caught and re-raised (never silently returns []).
+
+    Logs structured [ReadGovernor] entries at INFO level for quota forensics.
 
     Usage::
 
         docs = safe_stream(
             db.collection("products").where(...),
-            limit=500,
+            limit=120,
             context="products_route",
+            route="/products",
+            collection="products",
         )
     """
     if limit <= 0:
@@ -309,9 +381,25 @@ def safe_stream(query: Any, *, limit: int, context: str = "") -> list[Any]:
             f"safe_stream requires limit > 0 to prevent unbounded Firestore reads "
             f"(context={context!r})"
         )
-    docs = list(query.limit(limit).stream())
-    logger.debug(
-        "safe_stream: read %d docs [limit=%d, ctx=%r]",
-        len(docs), limit, context,
+
+    t0 = time.monotonic()
+    try:
+        docs = list(query.limit(limit).stream())
+    except _STALE_TRIGGER as exc:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        _rg_logger.warning(
+            "[ReadGovernor] QUOTA_ERROR route=%s collection=%s limit=%d "
+            "duration_ms=%d error=%s",
+            route or context, collection or "?", limit, duration_ms, type(exc).__name__,
+        )
+        raise  # never swallow — callers or global handler must convert to 503
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    _rg_logger.info(
+        "[ReadGovernor] route=%s collection=%s requested_limit=%d "
+        "docs_returned=%d duration_ms=%d context=%s",
+        route or context, collection or "?", limit, len(docs), duration_ms, context,
     )
+    if route:
+        _update_route_stats(route, len(docs), "miss")
     return docs

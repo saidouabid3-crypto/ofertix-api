@@ -32,8 +32,24 @@ def matches_store(data: dict, store_query: str) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="Count products for a store/source in Firestore.")
     parser.add_argument("--store", required=True, help="Store name, e.g. AliExpress, DHgate")
-    parser.add_argument("--limit", type=int, default=0, help="Optional max docs to scan")
+    parser.add_argument(
+        "--limit", type=int, default=500,
+        help="Max docs to scan (default 500). Use --confirm-full-scan to remove cap.",
+    )
+    parser.add_argument(
+        "--confirm-full-scan", action="store_true",
+        help="DANGER: scan entire collection. Costs 1 read per document.",
+    )
     args = parser.parse_args()
+
+    if not args.confirm_full_scan and args.limit <= 0:
+        import sys
+        print(
+            "[ReadGuard] Refusing unbounded Firestore scan. "
+            "Pass --limit N or --confirm-full-scan.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     scanned = 0
     matched = 0
@@ -42,8 +58,8 @@ def main():
     archived = 0
     missing_store = 0
 
-    query = db.collection("products")
-    for doc in query.stream():
+    _query = db.collection("products") if args.confirm_full_scan else db.collection("products").limit(args.limit)
+    for doc in _query.stream():
         scanned += 1
         data = doc.to_dict() or {}
         if not data.get("store"):
@@ -58,7 +74,7 @@ def main():
             if _text(data.get("status")) == "archived":
                 archived += 1
 
-        if args.limit and scanned >= args.limit:
+        if not args.confirm_full_scan and args.limit and scanned >= args.limit:
             break
 
     print(f"Scanned: {scanned}")
