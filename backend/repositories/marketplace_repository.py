@@ -32,7 +32,9 @@ def is_public_marketplace_item(item: Dict[str, Any]) -> bool:
         return False
     if status in BLOCKED_MARKETPLACE_STATUSES:
         return False
-    for field in ('isActive', 'isVisible', 'visible', 'visibleToUsers', 'publicVisible'):
+    if item.get('isActive') is not True:
+        return False
+    for field in ('isVisible', 'visible', 'visibleToUsers', 'publicVisible'):
         if item.get(field) is False:
             return False
     moderation_status = str(
@@ -117,20 +119,39 @@ class MarketplaceRepository:
         return item
 
     def get_user_items(self, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
-        """Return all items belonging to the authenticated seller (incl. pending/hidden)."""
+        """Return all items belonging to the authenticated seller (incl. pending/hidden).
+
+        Queries sellerId, userId, and ownerId to handle legacy data where only
+        one ownership field may be set.  Results are deduplicated by document id.
+        """
         user_id = (user_id or '').strip()
         if not user_id:
             return []
         limit = max(1, min(limit, 100))
-        docs = list(
-            db.collection(COLLECTION)
-            .where('sellerId', '==', user_id)
-            .limit(limit)
-            .stream()
-        )
-        items = [_with_id(doc) for doc in docs]
+
+        seen_ids: set = set()
+        items: List[Dict[str, Any]] = []
+
+        for field in ('sellerId', 'userId', 'ownerId'):
+            docs = list(
+                db.collection(COLLECTION)
+                .where(field, '==', user_id)
+                .limit(limit)
+                .stream()
+            )
+            for doc in docs:
+                item = _with_id(doc)
+                owner_ids = {
+                    str(item.get(key) or '').strip()
+                    for key in ('sellerId', 'userId', 'ownerId')
+                }
+                if user_id not in owner_ids or doc.id in seen_ids:
+                    continue
+                seen_ids.add(doc.id)
+                items.append(item)
+
         items.sort(key=lambda x: str(x.get('createdAt') or ''), reverse=True)
-        return items
+        return items[:limit]
 
     def update_item(self, item_id: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         ref = db.collection(COLLECTION).document(item_id)

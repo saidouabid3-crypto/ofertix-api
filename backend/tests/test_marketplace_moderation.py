@@ -328,6 +328,13 @@ def test_is_public_marketplace_item_approved_without_visible_flag():
     assert is_public_marketplace_item({'status': 'approved', 'isActive': True})
 
 
+def test_is_public_marketplace_item_requires_isactive_true():
+    assert not is_public_marketplace_item({'status': 'approved'})
+    assert not is_public_marketplace_item(
+        {'status': 'approved', 'isActive': False}
+    )
+
+
 def test_is_public_marketplace_item_rejects_banned_seller():
     assert not is_public_marketplace_item(
         {'status': 'approved', 'isActive': True, 'sellerBanned': True}
@@ -717,6 +724,180 @@ def test_my_items_returns_own_items_including_pending(monkeypatch):
     assert 'approved' in statuses
     assert 'pending' in statuses
     assert 'rejected' in statuses
+
+
+# ── 15C-D: create ignores payload ownership fields ───────────────────────────
+
+def test_create_ignores_payload_seller_id(monkeypatch):
+    """Payload sellerId/userId/ownerId must be overwritten with the auth uid."""
+    svc, captured = _make_marketplace_service(monkeypatch)
+    svc.create_item(
+        {'title': 'Test', 'sellerId': 'attacker', 'userId': 'attacker', 'ownerId': 'attacker'},
+        current_user={'uid': 'real-uid'},
+    )
+    assert captured['sellerId'] == 'real-uid'
+    assert captured['userId'] == 'real-uid'
+    assert captured['ownerId'] == 'real-uid'
+
+
+def test_create_stores_all_ownership_aliases(monkeypatch):
+    """Create must store sellerId, userId, and ownerId all equal to the auth uid."""
+    svc, captured = _make_marketplace_service(monkeypatch)
+    svc.create_item({'title': 'Test'}, current_user={'uid': 'user-123'})
+    assert captured.get('sellerId') == 'user-123'
+    assert captured.get('userId') == 'user-123'
+    assert captured.get('ownerId') == 'user-123'
+
+
+def test_create_ignores_payload_seller_identity(monkeypatch):
+    svc, captured = _make_marketplace_service(monkeypatch)
+    monkeypatch.setattr(
+        'services.marketplace_service.profile_repository.get_profile',
+        lambda _: {
+            'display_name': 'Verified Name',
+            'username': 'verified_user',
+            'avatar_url': 'https://example.com/avatar.jpg',
+            'seller_verified': True,
+        },
+    )
+    svc.create_item(
+        {
+            'title': 'Test',
+            'sellerName': 'Spoofed Name',
+            'sellerUsername': 'spoofed',
+            'sellerAvatarUrl': 'https://example.com/spoofed.jpg',
+            'sellerVerified': False,
+        },
+        current_user={'uid': 'user-123'},
+    )
+    assert captured['sellerName'] == 'Verified Name'
+    assert captured['sellerUsername'] == 'verified_user'
+    assert captured['sellerAvatarUrl'] == 'https://example.com/avatar.jpg'
+    assert captured['sellerVerified'] is True
+
+
+def test_create_returns_id_status_isactive_visible(monkeypatch):
+    """Create response must include id, status=pending, isActive=False, visibleToUsers=False."""
+    svc, captured = _make_marketplace_service(monkeypatch)
+    result = svc.create_item({'title': 'Test'}, current_user={'uid': 'user-1'})
+    assert result.get('id') == 'new-item'
+    assert captured['status'] == 'pending'
+    assert captured['isActive'] is False
+    assert captured['visibleToUsers'] is False
+
+
+# ── 15C-D: get_user_items queries all three ownership fields ──────────────────
+
+def _make_multi_field_db(items_by_field: dict):
+    """Build a fake Firestore client that returns items per queried field."""
+    class _FakeDoc:
+        def __init__(self, item_id, data):
+            self.id = item_id
+            self._data = data
+        def to_dict(self):
+            return dict(self._data)
+
+    class _FakeQuery:
+        def __init__(self, field=None):
+            self._field = field
+        def where(self, field, op, value):
+            return _FakeQuery(field)
+        def limit(self, n):
+            return self
+        def stream(self):
+            return items_by_field.get(self._field, [])
+
+    class _FakeColl:
+        def where(self, field, op, value):
+            return _FakeQuery(field)
+
+    class _FakeDb:
+        def collection(self, name):
+            return _FakeColl()
+
+    return _FakeDb()
+
+
+def test_my_items_returns_own_userid_legacy_item(monkeypatch):
+    """Items with only userId set (no sellerId) must appear in my-items."""
+    class _Doc:
+        def __init__(self):
+            self.id = 'legacy-userid-item'
+        def to_dict(self):
+            return {'userId': 'user-1', 'status': 'pending', 'isActive': False}
+
+    db_fake = _make_multi_field_db({'userId': [_Doc()]})
+    monkeypatch.setattr('repositories.marketplace_repository.db', db_fake)
+    repo = MarketplaceRepository()
+    items = repo.get_user_items('user-1')
+    assert any(i['id'] == 'legacy-userid-item' for i in items)
+
+
+def test_my_items_returns_own_ownerid_legacy_item(monkeypatch):
+    """Items with only ownerId set (no sellerId/userId) must appear in my-items."""
+    class _Doc:
+        def __init__(self):
+            self.id = 'legacy-ownerid-item'
+        def to_dict(self):
+            return {'ownerId': 'user-1', 'status': 'pending', 'isActive': False}
+
+    db_fake = _make_multi_field_db({'ownerId': [_Doc()]})
+    monkeypatch.setattr('repositories.marketplace_repository.db', db_fake)
+    repo = MarketplaceRepository()
+    items = repo.get_user_items('user-1')
+    assert any(i['id'] == 'legacy-ownerid-item' for i in items)
+
+
+def test_my_items_deduplicates_items_with_all_fields(monkeypatch):
+    """An item with sellerId/userId/ownerId all set must appear exactly once."""
+    class _Doc:
+        def __init__(self):
+            self.id = 'full-item'
+        def to_dict(self):
+            return {'sellerId': 'u1', 'userId': 'u1', 'ownerId': 'u1', 'status': 'approved'}
+
+    db_fake = _make_multi_field_db({
+        'sellerId': [_Doc()],
+        'userId': [_Doc()],
+        'ownerId': [_Doc()],
+    })
+    monkeypatch.setattr('repositories.marketplace_repository.db', db_fake)
+    repo = MarketplaceRepository()
+    items = repo.get_user_items('u1')
+    assert len([i for i in items if i['id'] == 'full-item']) == 1
+
+
+def test_my_items_queries_legacy_fields_when_seller_results_hit_limit(monkeypatch):
+    class _Doc:
+        def __init__(self, item_id, data):
+            self.id = item_id
+            self._data = data
+        def to_dict(self):
+            return dict(self._data)
+
+    db_fake = _make_multi_field_db({
+        'sellerId': [
+            _Doc('seller-item', {'sellerId': 'u1', 'createdAt': '2024-01-01'}),
+        ],
+        'userId': [
+            _Doc('legacy-newer', {'userId': 'u1', 'createdAt': '2025-01-01'}),
+        ],
+    })
+    monkeypatch.setattr('repositories.marketplace_repository.db', db_fake)
+    items = MarketplaceRepository().get_user_items('u1', limit=1)
+    assert [item['id'] for item in items] == ['legacy-newer']
+
+
+def test_my_items_defensively_excludes_mismatched_documents(monkeypatch):
+    class _Doc:
+        id = 'other-user-item'
+
+        def to_dict(self):
+            return {'sellerId': 'other-user', 'status': 'pending'}
+
+    db_fake = _make_multi_field_db({'sellerId': [_Doc()]})
+    monkeypatch.setattr('repositories.marketplace_repository.db', db_fake)
+    assert MarketplaceRepository().get_user_items('user-1') == []
 
 
 def test_my_items_does_not_include_other_users_items(monkeypatch):

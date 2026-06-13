@@ -86,10 +86,24 @@ class MarketplaceService:
         # Validate and normalize image URLs (rejects base64, file://, localhost).
         _normalize_and_validate_images(payload)
         profile = profile_repository.get_profile(user_id) or {}
-        payload['sellerName'] = payload.get('sellerName') or profile.get('display_name') or ''
-        payload['sellerUsername'] = payload.get('sellerUsername') or profile.get('username') or ''
-        payload['sellerAvatarUrl'] = payload.get('sellerAvatarUrl') or profile.get('avatar_url') or profile.get('photo_url') or ''
-        payload['sellerVerified'] = bool(payload.get('sellerVerified') or profile.get('seller_verified') or profile.get('is_verified'))
+        payload['sellerName'] = (
+            profile.get('display_name')
+            or current_user.get('name')
+            or ''
+        )
+        payload['sellerUsername'] = profile.get('username') or ''
+        payload['sellerAvatarUrl'] = (
+            profile.get('avatar_url')
+            or profile.get('photo_url')
+            or current_user.get('picture')
+            or ''
+        )
+        payload['sellerVerified'] = bool(
+            profile.get('seller_verified')
+            or profile.get('sellerVerified')
+            or profile.get('is_verified')
+            or profile.get('isVerified')
+        )
         return self.repo.create_item(payload)
 
     def get_item(self, item_id: str):
