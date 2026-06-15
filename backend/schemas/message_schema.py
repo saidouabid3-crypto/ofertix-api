@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -14,8 +14,19 @@ class StartConversationRequest(BaseModel):
     reel_thumbnail_url: str = Field(default='', max_length=700)
 
 
+class StartMarketplaceConversationRequest(BaseModel):
+    listing_id: str = Field(..., min_length=1, max_length=120)
+    initial_message: str = Field(default='', max_length=1000)
+
+
 class SendMessageRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=1000)
+
+
+class SendOfferRequest(BaseModel):
+    amount: float = Field(..., gt=0)
+    currency: str = Field(default='', min_length=0, max_length=12)
+    message: str = Field(default='', max_length=1000)
 
 
 class ConversationOut(BaseModel):
@@ -31,6 +42,15 @@ class ConversationOut(BaseModel):
     reel_title: str = ''
     reel_thumbnail_url: str = ''
     creator_id: str = ''
+    listing_id: str = ''
+    listing_title: str = ''
+    listing_image: str = ''
+    listing_price: float = 0
+    listing_currency: str = ''
+    listing_city: str = ''
+    seller_id: str = ''
+    buyer_id: str = ''
+    status: str = 'active'
     created_at: datetime
     updated_at: datetime
 
@@ -45,6 +65,8 @@ class MessageOut(BaseModel):
     reel_id: str = ''
     reel_title: str = ''
     reel_thumbnail_url: str = ''
+    offer_amount: Optional[float] = None
+    offer_currency: str = ''
     is_read: bool = False
     created_at: datetime
 
@@ -54,4 +76,5 @@ class ConversationListResponse(BaseModel):
 
 
 class MessageListResponse(BaseModel):
+    conversation: Optional[ConversationOut] = None
     items: List[MessageOut]

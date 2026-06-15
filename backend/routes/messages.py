@@ -7,7 +7,9 @@ from schemas.message_schema import (
     MessageListResponse,
     MessageOut,
     SendMessageRequest,
+    SendOfferRequest,
     StartConversationRequest,
+    StartMarketplaceConversationRequest,
 )
 from services.message_service import message_service
 
@@ -32,9 +34,28 @@ async def start_conversation(
     return item
 
 
+@router.post('/conversations/start', response_model=ConversationOut)
+async def start_marketplace_conversation(
+    payload: StartMarketplaceConversationRequest,
+    current_user: dict = Depends(require_active_user),
+):
+    try:
+        item = message_service.start_marketplace_conversation(
+            payload,
+            current_user=current_user,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return item
+
+
 @router.get('/inbox', response_model=ConversationListResponse)
 async def get_inbox(
-    limit: int = Query(default=50, ge=1, le=100),
+    limit: int = Query(default=30, ge=1, le=50),
     current_user: dict = Depends(require_user),
 ):
     return message_service.get_inbox(current_user=current_user, limit=limit)
@@ -43,14 +64,19 @@ async def get_inbox(
 @router.get('/conversations/{conversation_id}', response_model=MessageListResponse)
 async def get_conversation(
     conversation_id: str,
-    limit: int = Query(default=80, ge=1, le=120),
+    limit: int = Query(default=50, ge=1, le=100),
     current_user: dict = Depends(require_user),
 ):
-    return message_service.get_conversation_messages(
-        conversation_id=conversation_id,
-        current_user=current_user,
-        limit=limit,
-    )
+    try:
+        return message_service.get_conversation_messages(
+            conversation_id=conversation_id,
+            current_user=current_user,
+            limit=limit,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.post('/conversations/{conversation_id}/send', response_model=MessageOut)
@@ -59,15 +85,42 @@ async def send_message(
     payload: SendMessageRequest,
     current_user: dict = Depends(require_active_user),
 ):
-    item = message_service.send_message(
-        conversation_id=conversation_id,
-        payload=payload,
-        current_user=current_user,
-    )
+    try:
+        item = message_service.send_message(
+            conversation_id=conversation_id,
+            payload=payload,
+            current_user=current_user,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     if not item:
         raise HTTPException(status_code=404, detail='Conversation not found or forbidden')
 
+    return item
+
+
+@router.post('/conversations/{conversation_id}/offer', response_model=MessageOut)
+async def send_offer(
+    conversation_id: str,
+    payload: SendOfferRequest,
+    current_user: dict = Depends(require_active_user),
+):
+    try:
+        item = message_service.send_offer(
+            conversation_id=conversation_id,
+            payload=payload,
+            current_user=current_user,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if not item:
+        raise HTTPException(status_code=404, detail='Conversation not found')
     return item
 
 

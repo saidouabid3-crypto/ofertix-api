@@ -1,19 +1,22 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
 from core.firebase import db
+from repositories.marketplace_repository import is_public_marketplace_item
 
 
 class MessageRepository:
     CONVERSATIONS = 'conversations'
     MESSAGES = 'chat_messages'
     USERS = 'users'
+    MARKETPLACE_ITEMS = 'marketplace_items'
 
     def __init__(self):
         self.conversations = db.collection(self.CONVERSATIONS)
         self.messages = db.collection(self.MESSAGES)
         self.users = db.collection(self.USERS)
+        self.marketplace_items = db.collection(self.MARKETPLACE_ITEMS)
 
     def start_conversation(self, payload, current_user: dict) -> dict:
         sender_id = current_user['uid']
@@ -24,12 +27,13 @@ class MessageRepository:
 
         sender_profile = self._get_user_snapshot(sender_id, fallback=current_user)
         conversation_id = self._conversation_id(sender_id, receiver_id, payload.reel_id)
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
 
         conv_ref = self.conversations.document(conversation_id)
         snap = conv_ref.get()
+        created = not snap.exists
 
-        if not snap.exists:
+        if created:
             conversation = {
                 'id': conversation_id,
                 'participants': [sender_id, receiver_id],
@@ -71,6 +75,106 @@ class MessageRepository:
 
         return self.get_conversation(conversation_id, current_user={'uid': sender_id}) or conversation
 
+    def start_marketplace_conversation(
+        self,
+        listing_id: str,
+        initial_message: str,
+        current_user: dict,
+    ) -> dict:
+        buyer_id = str(current_user.get('uid') or '').strip()
+        listing_id = str(listing_id or '').strip()
+        if not buyer_id or not listing_id:
+            raise ValueError('Invalid marketplace conversation')
+
+        listing_snap = self.marketplace_items.document(listing_id).get()
+        if not listing_snap.exists:
+            raise LookupError('Marketplace listing not found')
+        listing = listing_snap.to_dict() or {}
+        listing['id'] = listing_id
+        if not is_public_marketplace_item(listing):
+            raise PermissionError('Marketplace listing is not available')
+
+        seller_id = next(
+            (
+                str(listing.get(field) or '').strip()
+                for field in ('sellerId', 'userId', 'ownerId', 'creatorId')
+                if str(listing.get(field) or '').strip()
+            ),
+            '',
+        )
+        if not seller_id:
+            raise ValueError('Marketplace listing has no seller')
+        if seller_id == buyer_id:
+            raise PermissionError('You cannot contact yourself')
+
+        buyer_profile = self._get_user_snapshot(buyer_id, fallback=current_user)
+        seller_profile = self._get_user_snapshot(
+            seller_id,
+            fallback={
+                'name': listing.get('sellerName') or '',
+                'picture': listing.get('sellerAvatarUrl') or '',
+            },
+        )
+        conversation_id = self._conversation_id(buyer_id, seller_id, f'marketplace_{listing_id}')
+        now = datetime.now(timezone.utc).isoformat()
+        conv_ref = self.conversations.document(conversation_id)
+        snap = conv_ref.get()
+        created = not snap.exists
+
+        if created:
+            images = listing.get('images') or []
+            listing_image = (
+                listing.get('coverImage')
+                or listing.get('image')
+                or (images[0] if isinstance(images, list) and images else '')
+                or ''
+            )
+            conversation = {
+                'id': conversation_id,
+                'participants': [buyer_id, seller_id],
+                'participant_names': {
+                    buyer_id: buyer_profile['name'],
+                    seller_id: seller_profile['name'],
+                },
+                'participant_photos': {
+                    buyer_id: buyer_profile['photo_url'],
+                    seller_id: seller_profile['photo_url'],
+                },
+                'last_message': '',
+                'last_sender_id': '',
+                'last_message_at': now,
+                'unread_counts': {buyer_id: 0, seller_id: 0},
+                'listing_id': listing_id,
+                'listing_title': str(listing.get('title') or ''),
+                'listing_image': str(listing_image),
+                'listing_price': self._safe_float(listing.get('price')),
+                'listing_currency': str(
+                    listing.get('currencyCode') or listing.get('currency') or ''
+                ).upper(),
+                'listing_city': str(listing.get('city') or ''),
+                'seller_id': seller_id,
+                'buyer_id': buyer_id,
+                'status': 'active',
+                'created_at': now,
+                'updated_at': now,
+            }
+            conv_ref.set(conversation)
+        else:
+            conversation = snap.to_dict() or {}
+            conversation['id'] = conversation.get('id') or conversation_id
+            if buyer_id not in (conversation.get('participants') or []):
+                raise PermissionError('Forbidden conversation')
+
+        clean_initial = str(initial_message or '').strip()
+        if created and clean_initial:
+            self.add_message(
+                conversation_id=conversation_id,
+                sender_id=buyer_id,
+                sender_name=buyer_profile['name'],
+                text=clean_initial,
+            )
+        return self.require_conversation(conversation_id, {'uid': buyer_id})
+
     def add_message(
         self,
         conversation_id: str,
@@ -81,6 +185,9 @@ class MessageRepository:
         reel_title: str = '',
         reel_thumbnail_url: str = '',
     ) -> Optional[dict]:
+        text = str(text or '').strip()
+        if not text or len(text) > 1000:
+            raise ValueError('Message must contain between 1 and 1000 characters')
         conversation = self.get_conversation(conversation_id, current_user={'uid': sender_id})
         if not conversation:
             return None
@@ -88,15 +195,17 @@ class MessageRepository:
         participants = conversation.get('participants') or []
         if sender_id not in participants:
             return None
+        if conversation.get('status') not in ('', 'active'):
+            raise PermissionError('Conversation is not active')
 
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         message_id = f'msg_{uuid4().hex[:14]}'
         message = {
             'id': message_id,
             'conversation_id': conversation_id,
             'sender_id': sender_id,
             'sender_name': sender_name or 'User',
-            'text': text.strip(),
+            'text': text,
             'type': 'text',
             'reel_id': reel_id or conversation.get('reel_id') or '',
             'reel_title': reel_title or conversation.get('reel_title') or '',
@@ -126,16 +235,101 @@ class MessageRepository:
 
         return self._normalize_message(message)
 
-    def get_inbox(self, current_user: dict, limit: int = 50) -> list[dict]:
-        user_id = current_user['uid']
-        limit = max(1, min(limit, 100))
-
-        docs = list(
-            self.conversations
-            .where('participants', 'array_contains', user_id)
-            .limit(120)
-            .stream()
+    def add_offer(
+        self,
+        conversation_id: str,
+        sender_id: str,
+        sender_name: str,
+        amount: float,
+        currency: str,
+        text: str = '',
+    ) -> Optional[dict]:
+        conversation = self.get_conversation(
+            conversation_id,
+            current_user={'uid': sender_id},
         )
+        if not conversation:
+            return None
+        if not conversation.get('listing_id'):
+            raise ValueError('Offers are only available for marketplace conversations')
+        if sender_id != conversation.get('buyer_id'):
+            raise PermissionError('Only the buyer can make an offer')
+        if conversation.get('status') not in ('', 'active'):
+            raise PermissionError('Conversation is not active')
+        if amount <= 0:
+            raise ValueError('Offer amount must be greater than zero')
+
+        offer_currency = (
+            str(conversation.get('listing_currency') or '').strip().upper()
+            or str(currency or '').strip().upper()
+        )
+        clean_text = str(text or '').strip()
+        if len(clean_text) > 1000:
+            raise ValueError('Offer message is too long')
+        display_text = clean_text or f'{amount:g} {offer_currency}'.strip()
+        return self._add_typed_message(
+            conversation=conversation,
+            sender_id=sender_id,
+            sender_name=sender_name,
+            text=display_text,
+            message_type='offer',
+            offer_amount=float(amount),
+            offer_currency=offer_currency,
+        )
+
+    def _add_typed_message(
+        self,
+        conversation: dict,
+        sender_id: str,
+        sender_name: str,
+        text: str,
+        message_type: str,
+        offer_amount: float | None = None,
+        offer_currency: str = '',
+    ) -> dict:
+        conversation_id = conversation['id']
+        participants = conversation.get('participants') or []
+        now = datetime.now(timezone.utc).isoformat()
+        message_id = f'msg_{uuid4().hex[:14]}'
+        message = {
+            'id': message_id,
+            'conversation_id': conversation_id,
+            'sender_id': sender_id,
+            'sender_name': sender_name or 'User',
+            'text': text,
+            'type': message_type,
+            'offer_amount': offer_amount,
+            'offer_currency': offer_currency,
+            'is_read': False,
+            'created_at': now,
+        }
+        self.messages.document(message_id).set(message)
+        unread = dict(conversation.get('unread_counts') or {})
+        for uid in participants:
+            unread[uid] = int(unread.get(uid, 0) or 0)
+            if uid != sender_id:
+                unread[uid] += 1
+        self.conversations.document(conversation_id).set(
+            {
+                'last_message': text,
+                'last_sender_id': sender_id,
+                'last_message_at': now,
+                'unread_counts': unread,
+                'updated_at': now,
+            },
+            merge=True,
+        )
+        return self._normalize_message(message)
+
+    def get_inbox(self, current_user: dict, limit: int = 30) -> list[dict]:
+        user_id = current_user['uid']
+        limit = max(1, min(limit, 50))
+
+        query = self.conversations.where('participants', 'array_contains', user_id)
+        try:
+            docs = list(query.order_by('last_message_at', direction='DESCENDING').limit(limit).stream())
+        except Exception:
+            docs = list(query.limit(min(limit * 3, 120)).stream())
 
         items = []
         for doc in docs:
@@ -160,18 +354,28 @@ class MessageRepository:
 
         return self._normalize_conversation(data)
 
-    def list_messages(self, conversation_id: str, current_user: dict, limit: int = 80) -> list[dict]:
+    def require_conversation(self, conversation_id: str, current_user: dict) -> dict:
+        user_id = current_user['uid']
+        snap = self.conversations.document(conversation_id).get()
+        if not snap.exists:
+            raise LookupError('Conversation not found')
+        data = snap.to_dict() or {}
+        data['id'] = data.get('id') or conversation_id
+        if user_id not in (data.get('participants') or []):
+            raise PermissionError('Forbidden conversation')
+        return self._normalize_conversation(data)
+
+    def list_messages(self, conversation_id: str, current_user: dict, limit: int = 50) -> list[dict]:
         conversation = self.get_conversation(conversation_id, current_user=current_user)
         if not conversation:
             return []
 
-        limit = max(1, min(limit, 120))
-        docs = list(
-            self.messages
-            .where('conversation_id', '==', conversation_id)
-            .limit(limit)
-            .stream()
-        )
+        limit = max(1, min(limit, 100))
+        query = self.messages.where('conversation_id', '==', conversation_id)
+        try:
+            docs = list(query.order_by('created_at', direction='DESCENDING').limit(limit).stream())
+        except Exception:
+            docs = list(query.limit(limit).stream())
 
         items = []
         for doc in docs:
@@ -192,7 +396,7 @@ class MessageRepository:
         unread[user_id] = 0
 
         self.conversations.document(conversation_id).set(
-            {'unread_counts': unread, 'updated_at': datetime.utcnow().isoformat()},
+            {'unread_counts': unread, 'updated_at': datetime.now(timezone.utc).isoformat()},
             merge=True,
         )
 
@@ -204,6 +408,13 @@ class MessageRepository:
         suffix = (reel_id or 'general').strip() or 'general'
         safe = ''.join(ch if ch.isalnum() or ch in ['_', '-'] else '_' for ch in suffix)
         return f'conv_{a}_{b}_{safe}'[:180]
+
+    @staticmethod
+    def _safe_float(value) -> float:
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0
 
     def _get_user_snapshot(self, uid: str, fallback: dict | None = None) -> dict:
         fallback = fallback or {}
@@ -233,6 +444,15 @@ class MessageRepository:
         data['reel_title'] = str(data.get('reel_title') or '')
         data['reel_thumbnail_url'] = str(data.get('reel_thumbnail_url') or '')
         data['creator_id'] = str(data.get('creator_id') or '')
+        data['listing_id'] = str(data.get('listing_id') or '')
+        data['listing_title'] = str(data.get('listing_title') or '')
+        data['listing_image'] = str(data.get('listing_image') or '')
+        data['listing_price'] = float(data.get('listing_price') or 0)
+        data['listing_currency'] = str(data.get('listing_currency') or '')
+        data['listing_city'] = str(data.get('listing_city') or '')
+        data['seller_id'] = str(data.get('seller_id') or '')
+        data['buyer_id'] = str(data.get('buyer_id') or '')
+        data['status'] = str(data.get('status') or 'active')
         return data
 
     def _normalize_message(self, data: dict) -> dict:
@@ -244,6 +464,9 @@ class MessageRepository:
         data['reel_id'] = str(data.get('reel_id') or '')
         data['reel_title'] = str(data.get('reel_title') or '')
         data['reel_thumbnail_url'] = str(data.get('reel_thumbnail_url') or '')
+        raw_amount = data.get('offer_amount')
+        data['offer_amount'] = float(raw_amount) if raw_amount is not None else None
+        data['offer_currency'] = str(data.get('offer_currency') or '')
         data['is_read'] = bool(data.get('is_read') or False)
         return data
 
