@@ -1,9 +1,13 @@
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
 from core.firebase import db
 from repositories.marketplace_repository import is_public_marketplace_item
+from services.push_notification_service import push_notification_service
+
+logger = logging.getLogger("ofertix.messages")
 
 
 class MessageRepository:
@@ -233,6 +237,13 @@ class MessageRepository:
             merge=True,
         )
 
+        self._notify_message(
+            conversation=conversation,
+            sender_id=sender_id,
+            sender_name=sender_name,
+            is_offer=False,
+        )
+
         return self._normalize_message(message)
 
     def add_offer(
@@ -319,7 +330,55 @@ class MessageRepository:
             },
             merge=True,
         )
+
+        self._notify_message(
+            conversation=conversation,
+            sender_id=sender_id,
+            sender_name=sender_name,
+            is_offer=message_type == 'offer',
+        )
+
         return self._normalize_message(message)
+
+    def _notify_message(
+        self,
+        conversation: dict,
+        sender_id: str,
+        sender_name: str,
+        is_offer: bool,
+    ) -> None:
+        conversation_id = conversation.get('id', '')
+        participants = conversation.get('participants') or []
+        receiver_id = next((uid for uid in participants if uid != sender_id), '')
+        if not receiver_id:
+            logger.info(
+                '[Marketplace16E-C] message_notification receiver=none '
+                'conversation=%s mode=none status=skipped',
+                conversation_id,
+            )
+            return
+
+        try:
+            status = push_notification_service.notify_new_message_sync(
+                receiver_id=receiver_id,
+                sender_name=sender_name,
+                listing_title=str(conversation.get('listing_title') or ''),
+                conversation_id=conversation_id,
+                is_offer=is_offer,
+            )
+        except Exception as exc:
+            logger.warning(
+                '[Marketplace16E-C] message_notification receiver=%s '
+                'conversation=%s mode=push status=failed error=%s',
+                receiver_id, conversation_id, type(exc).__name__,
+            )
+            return
+
+        logger.info(
+            '[Marketplace16E-C] message_notification receiver=%s '
+            'conversation=%s mode=push status=%s',
+            receiver_id, conversation_id, status,
+        )
 
     def get_inbox(self, current_user: dict, limit: int = 30) -> list[dict]:
         user_id = current_user['uid']

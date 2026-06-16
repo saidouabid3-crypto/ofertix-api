@@ -23,6 +23,34 @@ _BODY: dict[str, str] = {
     "fr": "{name} est passé à {new:.2f} {currency}",
 }
 
+_MESSAGE_TITLE: dict[str, str] = {
+    "en": "New message",
+    "es": "Nuevo mensaje",
+    "ar": "رسالة جديدة",
+    "fr": "Nouveau message",
+}
+
+_MESSAGE_BODY: dict[str, str] = {
+    "en": "{sender}: new message about {listing}",
+    "es": "{sender}: nuevo mensaje sobre {listing}",
+    "ar": "{sender}: رسالة جديدة بخصوص {listing}",
+    "fr": "{sender} : nouveau message concernant {listing}",
+}
+
+_OFFER_TITLE: dict[str, str] = {
+    "en": "New offer",
+    "es": "Nueva oferta",
+    "ar": "عرض جديد",
+    "fr": "Nouvelle offre",
+}
+
+_OFFER_BODY: dict[str, str] = {
+    "en": "{sender} made an offer on {listing}",
+    "es": "{sender} hizo una oferta por {listing}",
+    "ar": "قدّم {sender} عرضًا على {listing}",
+    "fr": "{sender} a fait une offre sur {listing}",
+}
+
 
 class PushNotificationService:
     async def notify_price_drop(
@@ -76,6 +104,65 @@ class PushNotificationService:
                     sent += 1
 
         return sent
+
+    def notify_new_message_sync(
+        self,
+        *,
+        receiver_id: str,
+        sender_name: str,
+        listing_title: str,
+        conversation_id: str,
+        is_offer: bool = False,
+    ) -> str:
+        """Send a marketplace message/offer push synchronously.
+
+        Never raises — failures are swallowed and reported via the return
+        status so the calling message-send flow is never blocked.
+        """
+        receiver_id = str(receiver_id or "").strip()
+        if not receiver_id:
+            return "skipped"
+        try:
+            profile = self._user_profile(receiver_id)
+        except Exception as exc:
+            logger.warning("notify_new_message: profile lookup failed: %s", exc)
+            return "failed"
+
+        tokens = profile["tokens"]
+        if not tokens:
+            return "skipped"
+
+        lang = profile["language"]
+        sender_name = (sender_name or "User").strip()[:60]
+        listing_title = (listing_title or "").strip()[:80]
+
+        if is_offer:
+            title = _OFFER_TITLE.get(lang, _OFFER_TITLE["en"])
+            body = _OFFER_BODY.get(lang, _OFFER_BODY["en"]).format(
+                sender=sender_name, listing=listing_title or "your listing"
+            )
+            msg_type = "marketplace_offer"
+        else:
+            title = _MESSAGE_TITLE.get(lang, _MESSAGE_TITLE["en"])
+            body = _MESSAGE_BODY.get(lang, _MESSAGE_BODY["en"]).format(
+                sender=sender_name, listing=listing_title or "your listing"
+            )
+            msg_type = "marketplace_message"
+
+        data = {
+            "type": msg_type,
+            "conversationId": conversation_id,
+        }
+
+        sent_any = False
+        for token in tokens:
+            try:
+                if self._send_fcm(token, title, body, data):
+                    sent_any = True
+            except Exception as exc:
+                logger.debug("notify_new_message: send failed: %s", type(exc).__name__)
+
+        return "sent" if sent_any else "failed"
 
     def _collect_interested_users(self, product_id: str) -> set[str]:
         users: set[str] = set()
