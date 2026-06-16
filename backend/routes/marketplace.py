@@ -6,7 +6,9 @@ from core.market_config import normalize_market
 from services.catalog_edge_cache import catalog_cache, MARKETPLACE_FRESH_TTL, MARKETPLACE_STALE_TTL
 from services.cloudinary_upload_service import cloudinary_upload_service
 from services.marketplace_service import MarketplaceService
+from services.review_service import review_service
 from schemas.marketplace_schema import MarketplaceValidationError
+from schemas.review_schema import CreateReviewRequest, ReviewOut
 
 router = APIRouter(prefix='/marketplace', tags=['marketplace'])
 service = MarketplaceService()
@@ -193,6 +195,32 @@ def favorite_marketplace_item(
     current_user: dict = Depends(require_active_user),
 ):
     return service.favorite_item(item_id, current_user['uid'])
+
+@router.delete('/items/{item_id}/favorite')
+def unfavorite_marketplace_item(
+    item_id: str,
+    current_user: dict = Depends(require_active_user),
+):
+    return service.unfavorite_item(item_id, current_user['uid'])
+
+@router.get('/items/{item_id}/favorite')
+def get_marketplace_item_favorite_status(
+    item_id: str,
+    current_user: dict = Depends(require_active_user),
+):
+    return {'is_saved': service.is_item_favorited(item_id, current_user['uid'])}
+
+@router.post('/reviews', response_model=ReviewOut)
+def create_marketplace_review(
+    payload: CreateReviewRequest,
+    current_user: dict = Depends(require_active_user),
+):
+    try:
+        return review_service.create_review(payload, current_user=current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @router.post('/items/{item_id}/report')
 def report_marketplace_item(

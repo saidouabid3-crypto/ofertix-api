@@ -27,6 +27,7 @@ class PublicProfileOut(BaseModel):
     total_likes: int = 0
     rating_average: float = 0
     rating_count: int = 0
+    trust_level: str = 'new_seller'
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

@@ -185,6 +185,35 @@ class ProfileRepository:
             merge=True,
         )
 
+    def _trust_level(
+        self,
+        *,
+        seller_verified: bool,
+        sell_items_count: int,
+        rating_count: int,
+        rating_average: float,
+        created_at,
+    ) -> str:
+        if rating_count >= 3 and rating_average >= 4.5:
+            return 'highly_rated_seller'
+        if seller_verified:
+            return 'verified_seller'
+        if sell_items_count >= 3:
+            return 'active_seller'
+        is_new = True
+        if created_at:
+            try:
+                created = (
+                    created_at
+                    if isinstance(created_at, datetime)
+                    else datetime.fromisoformat(str(created_at).replace('Z', '+00:00'))
+                )
+                age_days = (datetime.now(created.tzinfo or None) - created).days
+                is_new = age_days < 30 and sell_items_count == 0
+            except (ValueError, TypeError):
+                is_new = sell_items_count == 0
+        return 'new_seller' if is_new else 'basic_profile'
+
     def _normalize_profile(self, data: dict) -> dict:
         username = str(data.get('username') or '')
         photo_url = str(
@@ -192,6 +221,18 @@ class ProfileRepository:
             or data.get('photoUrl')
             or data.get('avatar_url')
             or ''
+        )
+        seller_verified = bool(data.get('seller_verified') or data.get('sellerVerified') or False)
+        sell_items_count = int(data.get('sell_items_count', 0) or 0)
+        rating_count = int(data.get('rating_count', 0) or 0)
+        rating_average = float(data.get('rating_average') or data.get('ratingAverage') or 0)
+        created_at = data.get('created_at') or data.get('createdAt')
+        trust_level = self._trust_level(
+            seller_verified=seller_verified,
+            sell_items_count=sell_items_count,
+            rating_count=rating_count,
+            rating_average=rating_average,
+            created_at=created_at,
         )
         return {
             'uid': str(data.get('uid') or ''),
@@ -222,21 +263,16 @@ class ProfileRepository:
                 or data.get('verified')
                 or False
             ),
-            'seller_verified': bool(
-                data.get('seller_verified')
-                or data.get('sellerVerified')
-                or False
-            ),
+            'seller_verified': seller_verified,
             'followers_count': int(data.get('followers_count', 0) or 0),
             'following_count': int(data.get('following_count', 0) or 0),
             'reels_count': int(data.get('reels_count', 0) or 0),
-            'sell_items_count': int(data.get('sell_items_count', 0) or 0),
+            'sell_items_count': sell_items_count,
             'total_likes': int(data.get('total_likes', 0) or 0),
-            'rating_average': float(
-                data.get('rating_average') or data.get('ratingAverage') or 0
-            ),
-            'rating_count': int(data.get('rating_count', 0) or 0),
-            'created_at': data.get('created_at') or data.get('createdAt'),
+            'rating_average': rating_average,
+            'rating_count': rating_count,
+            'trust_level': trust_level,
+            'created_at': created_at,
             'updated_at': data.get('updated_at') or data.get('updatedAt'),
         }
 

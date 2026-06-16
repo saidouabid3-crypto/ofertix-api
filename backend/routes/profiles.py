@@ -7,7 +7,9 @@ from schemas.profile_schema import (
     PublicProfileOut,
 )
 from schemas.smart_reel_schema import SmartReelOut
+from schemas.review_schema import ReviewListResponse
 from services.profile_service import profile_service
+from services.review_service import review_service
 
 router = APIRouter(prefix='/profiles', tags=['Profiles'])
 
@@ -39,6 +41,11 @@ async def get_public_profile(uid: str):
 @router.get('/{uid}/reels', response_model=list[SmartReelOut])
 async def get_creator_reels(uid: str, limit: int = Query(default=30, ge=1, le=50)):
     return profile_service.get_creator_reels(uid=uid, limit=limit)
+
+
+@router.get('/{uid}/reviews', response_model=ReviewListResponse)
+async def get_profile_reviews(uid: str, limit: int = Query(default=20, ge=1, le=50)):
+    return review_service.list_reviews_for_user(uid=uid, limit=limit)
 
 
 @router.get('/{uid}/sell-items')

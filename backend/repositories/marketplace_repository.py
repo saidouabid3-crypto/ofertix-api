@@ -188,16 +188,36 @@ class MarketplaceRepository:
 
     def favorite_item(self, item_id: str, user_id: str) -> Dict[str, Any]:
         fav_id = f'{item_id}_{user_id}'
-        db.collection(FAVORITES_COLLECTION).document(fav_id).set({
+        fav_ref = db.collection(FAVORITES_COLLECTION).document(fav_id)
+        if fav_ref.get().exists:
+            return {'ok': True, 'itemId': item_id, 'userId': user_id, 'is_saved': True}
+        fav_ref.set({
             'itemId': item_id,
             'userId': user_id,
             'createdAt': datetime.now(timezone.utc),
-        }, merge=True)
+        })
         db.collection(COLLECTION).document(item_id).update({
             'favorites': firestore_increment(1),
             'favoriteCount': firestore_increment(1),
         })
-        return {'ok': True, 'itemId': item_id, 'userId': user_id}
+        return {'ok': True, 'itemId': item_id, 'userId': user_id, 'is_saved': True}
+
+    def unfavorite_item(self, item_id: str, user_id: str) -> Dict[str, Any]:
+        fav_id = f'{item_id}_{user_id}'
+        fav_ref = db.collection(FAVORITES_COLLECTION).document(fav_id)
+        if fav_ref.get().exists:
+            fav_ref.delete()
+            db.collection(COLLECTION).document(item_id).update({
+                'favorites': firestore_increment(-1),
+                'favoriteCount': firestore_increment(-1),
+            })
+        return {'ok': True, 'itemId': item_id, 'userId': user_id, 'is_saved': False}
+
+    def is_item_favorited(self, item_id: str, user_id: str) -> bool:
+        if not item_id or not user_id:
+            return False
+        fav_id = f'{item_id}_{user_id}'
+        return db.collection(FAVORITES_COLLECTION).document(fav_id).get().exists
 
     def report_item(self, item_id: str, user_id: str, reason: str) -> Dict[str, Any]:
         ref = db.collection(REPORTS_COLLECTION).document()

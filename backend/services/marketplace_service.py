@@ -185,5 +185,11 @@ class MarketplaceService:
     def favorite_item(self, item_id: str, user_id: str):
         return self.repo.favorite_item(item_id, user_id)
 
+    def unfavorite_item(self, item_id: str, user_id: str):
+        return self.repo.unfavorite_item(item_id, user_id)
+
+    def is_item_favorited(self, item_id: str, user_id: str) -> bool:
+        return self.repo.is_item_favorited(item_id, user_id)
+
     def report_item(self, item_id: str, user_id: str, reason: str):
         return self.repo.report_item(item_id, user_id, reason)
