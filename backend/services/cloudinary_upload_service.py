@@ -34,6 +34,23 @@ class CloudinaryUploadService:
             "height": result.get("height"),
         }
 
+    def upload_profile_avatar(self, file: UploadFile) -> dict:
+        public_id = f"ofertix/avatars/avatar_{uuid4().hex[:16]}"
+        file.file.seek(0)
+        result = cloudinary.uploader.upload(
+            file.file,
+            resource_type="image",
+            public_id=public_id,
+            overwrite=True,
+            transformation=[
+                {"width": 400, "height": 400, "crop": "fill", "gravity": "face", "quality": "auto:good"}
+            ],
+        )
+        return {
+            "secure_url": result.get("secure_url", ""),
+            "public_id": result.get("public_id", public_id),
+        }
+
     def upload_reel_video(self, file: UploadFile) -> dict:
         public_id = f"ofertix/smart_reels/reel_{uuid4().hex[:16]}"
 

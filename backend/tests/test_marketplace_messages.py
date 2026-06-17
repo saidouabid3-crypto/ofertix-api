@@ -1,7 +1,7 @@
 import pytest
 from fastapi import HTTPException
 
-from core.auth import require_user
+from core.auth import require_user, require_active_user
 
 
 class _Doc:
@@ -311,3 +311,95 @@ def test_inbox_deduplicates_repeated_conversation_ids(monkeypatch):
 
     assert [item['id'] for item in inbox] == ['conv-dup']
     assert [item['id'] for item in inbox_again] == ['conv-dup']
+
+
+# ---------------------------------------------------------------------------
+# archive / delete-for-me
+# ---------------------------------------------------------------------------
+
+def test_inbox_excludes_deleted_conversations(monkeypatch):
+    """get_inbox must hide conversations where the caller is in deletedFor."""
+    repo, fake_db = _repo(monkeypatch)
+    conversations = fake_db.collection('conversations').data
+    conversations['conv-visible'] = {
+        'id': 'conv-visible',
+        'participants': ['buyer-1', 'seller-1'],
+        'last_message_at': '2026-01-02T00:00:00',
+    }
+    conversations['conv-deleted'] = {
+        'id': 'conv-deleted',
+        'participants': ['buyer-1', 'seller-1'],
+        'last_message_at': '2026-01-03T00:00:00',
+        'deletedFor': ['buyer-1'],  # buyer deleted, seller still sees it
+    }
+
+    buyer_inbox = repo.get_inbox({'uid': 'buyer-1'}, limit=10)
+    seller_inbox = repo.get_inbox({'uid': 'seller-1'}, limit=10)
+
+    buyer_ids = [c['id'] for c in buyer_inbox]
+    seller_ids = [c['id'] for c in seller_inbox]
+    assert 'conv-deleted' not in buyer_ids
+    assert 'conv-visible' in buyer_ids
+    assert 'conv-deleted' in seller_ids  # seller is unaffected
+
+
+def test_inbox_includes_archived_conversations_for_other_participant(monkeypatch):
+    """Archiving a conversation for one user must not hide it for the other."""
+    repo, fake_db = _repo(monkeypatch)
+    conversations = fake_db.collection('conversations').data
+    conversations['conv-arch'] = {
+        'id': 'conv-arch',
+        'participants': ['buyer-1', 'seller-1'],
+        'last_message_at': '2026-01-02T00:00:00',
+        'archivedFor': ['buyer-1'],  # buyer archived it
+    }
+
+    # archivedFor is not a deletion filter so both participants still see it
+    buyer_inbox = repo.get_inbox({'uid': 'buyer-1'}, limit=10)
+    seller_inbox = repo.get_inbox({'uid': 'seller-1'}, limit=10)
+
+    assert 'conv-arch' in [c['id'] for c in buyer_inbox]
+    assert 'conv-arch' in [c['id'] for c in seller_inbox]
+
+
+def test_check_participant_raises_for_non_participant(monkeypatch):
+    """_check_participant must raise PermissionError for strangers."""
+    repo, fake_db = _repo(monkeypatch)
+    conversations = fake_db.collection('conversations').data
+    conversations['conv-ab'] = {
+        'id': 'conv-ab',
+        'participants': ['buyer-1', 'seller-1'],
+    }
+
+    with pytest.raises(PermissionError, match='Forbidden'):
+        repo._check_participant('conv-ab', 'stranger-1')
+
+
+def test_check_participant_raises_for_missing_conversation(monkeypatch):
+    """_check_participant must raise LookupError when conversation does not exist."""
+    repo, _ = _repo(monkeypatch)
+
+    with pytest.raises(LookupError, match='not found'):
+        repo._check_participant('no-such-conv', 'buyer-1')
+
+
+def test_archive_route_requires_auth():
+    archive_route = next(
+        (r for r in message_routes.router.routes
+         if '/archive' in (r.path or '')),
+        None,
+    )
+    assert archive_route is not None, 'archive route missing'
+    deps = {d.call for d in archive_route.dependant.dependencies}
+    assert require_active_user in deps
+
+
+def test_delete_for_me_route_requires_auth():
+    delete_route = next(
+        (r for r in message_routes.router.routes
+         if '/delete-for-me' in (r.path or '')),
+        None,
+    )
+    assert delete_route is not None, 'delete-for-me route missing'
+    deps = {d.call for d in delete_route.dependant.dependencies}
+    assert require_active_user in deps

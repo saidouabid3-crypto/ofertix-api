@@ -358,6 +358,15 @@ class MessageRepository:
             )
             return
 
+        reel_id = str(conversation.get('reel_id') or '')
+        listing_id = str(conversation.get('listing_id') or '')
+        if reel_id:
+            conv_type = 'reel'
+        elif listing_id:
+            conv_type = 'marketplace'
+        else:
+            conv_type = 'direct'
+
         try:
             status = push_notification_service.notify_new_message_sync(
                 receiver_id=receiver_id,
@@ -365,6 +374,7 @@ class MessageRepository:
                 listing_title=str(conversation.get('listing_title') or ''),
                 conversation_id=conversation_id,
                 is_offer=is_offer,
+                conversation_type=conv_type,
             )
         except Exception as exc:
             logger.warning(
@@ -375,9 +385,8 @@ class MessageRepository:
             return
 
         logger.info(
-            '[Marketplace16E-C] message_notification receiver=%s '
-            'conversation=%s mode=push status=%s',
-            receiver_id, conversation_id, status,
+            '[OfertixMessages] notify receiver=%s type=%s conversation=%s mode=push status=%s',
+            receiver_id, conv_type, conversation_id, status,
         )
 
     def get_inbox(self, current_user: dict, limit: int = 30) -> list[dict]:
@@ -399,6 +408,8 @@ class MessageRepository:
                 continue
             participants = data.get('participants') or []
             if len(set(participants)) < 2 or user_id not in participants:
+                continue
+            if user_id in (data.get('deletedFor') or []):
                 continue
             seen_ids.add(conversation_id)
             data['id'] = conversation_id
@@ -469,6 +480,30 @@ class MessageRepository:
 
         conversation['unread_counts'] = unread
         return conversation
+
+    def archive_for_me(self, conversation_id: str, user_id: str) -> None:
+        self._check_participant(conversation_id, user_id)
+        from google.cloud.firestore_v1 import ArrayUnion
+        self.conversations.document(conversation_id).set(
+            {'archivedFor': ArrayUnion([user_id]), 'updated_at': datetime.now(timezone.utc).isoformat()},
+            merge=True,
+        )
+
+    def delete_for_me(self, conversation_id: str, user_id: str) -> None:
+        self._check_participant(conversation_id, user_id)
+        from google.cloud.firestore_v1 import ArrayUnion
+        self.conversations.document(conversation_id).set(
+            {'deletedFor': ArrayUnion([user_id]), 'updated_at': datetime.now(timezone.utc).isoformat()},
+            merge=True,
+        )
+
+    def _check_participant(self, conversation_id: str, user_id: str) -> None:
+        snap = self.conversations.document(conversation_id).get()
+        if not snap.exists:
+            raise LookupError('Conversation not found')
+        data = snap.to_dict() or {}
+        if user_id not in (data.get('participants') or []):
+            raise PermissionError('Forbidden conversation')
 
     def _conversation_id(self, sender_id: str, receiver_id: str, reel_id: str = '') -> str:
         a, b = sorted([sender_id, receiver_id])

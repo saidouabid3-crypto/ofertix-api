@@ -56,5 +56,17 @@ class MessageService:
     def mark_read(self, conversation_id: str, current_user: dict):
         return message_repository.mark_read(conversation_id=conversation_id, current_user=current_user)
 
+    def archive_conversation(self, conversation_id: str, current_user: dict) -> None:
+        message_repository.archive_for_me(
+            conversation_id=conversation_id,
+            user_id=current_user['uid'],
+        )
+
+    def delete_conversation_for_me(self, conversation_id: str, current_user: dict) -> None:
+        message_repository.delete_for_me(
+            conversation_id=conversation_id,
+            user_id=current_user['uid'],
+        )
+
 
 message_service = MessageService()

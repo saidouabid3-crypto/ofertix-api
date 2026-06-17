@@ -135,3 +135,31 @@ async def mark_read(
         raise HTTPException(status_code=404, detail='Conversation not found or forbidden')
 
     return item
+
+
+@router.post('/conversations/{conversation_id}/archive')
+async def archive_conversation(
+    conversation_id: str,
+    current_user: dict = Depends(require_active_user),
+):
+    try:
+        message_service.archive_conversation(conversation_id, current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {'status': 'archived'}
+
+
+@router.post('/conversations/{conversation_id}/delete-for-me')
+async def delete_conversation_for_me(
+    conversation_id: str,
+    current_user: dict = Depends(require_active_user),
+):
+    try:
+        message_service.delete_conversation_for_me(conversation_id, current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {'status': 'deleted_for_me'}

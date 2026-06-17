@@ -51,6 +51,20 @@ _OFFER_BODY: dict[str, str] = {
     "fr": "{sender} a fait une offre sur {listing}",
 }
 
+_REEL_MESSAGE_BODY: dict[str, str] = {
+    "en": "{sender}: new message about your reel",
+    "es": "{sender}: nuevo mensaje sobre tu Reel",
+    "ar": "{sender}: رسالة جديدة بخصوص Reel",
+    "fr": "{sender} : nouveau message concernant votre reel",
+}
+
+_DIRECT_MESSAGE_BODY: dict[str, str] = {
+    "en": "{sender}: new message",
+    "es": "{sender}: nuevo mensaje",
+    "ar": "{sender}: رسالة جديدة",
+    "fr": "{sender} : nouveau message",
+}
+
 
 class PushNotificationService:
     async def notify_price_drop(
@@ -113,6 +127,7 @@ class PushNotificationService:
         listing_title: str,
         conversation_id: str,
         is_offer: bool = False,
+        conversation_type: str = "marketplace",
     ) -> str:
         """Send a marketplace message/offer push synchronously.
 
@@ -142,6 +157,18 @@ class PushNotificationService:
                 sender=sender_name, listing=listing_title or "your listing"
             )
             msg_type = "marketplace_offer"
+        elif conversation_type == "reel":
+            title = _MESSAGE_TITLE.get(lang, _MESSAGE_TITLE["en"])
+            body = _REEL_MESSAGE_BODY.get(lang, _REEL_MESSAGE_BODY["en"]).format(
+                sender=sender_name
+            )
+            msg_type = "reel_message"
+        elif conversation_type == "direct":
+            title = _MESSAGE_TITLE.get(lang, _MESSAGE_TITLE["en"])
+            body = _DIRECT_MESSAGE_BODY.get(lang, _DIRECT_MESSAGE_BODY["en"]).format(
+                sender=sender_name
+            )
+            msg_type = "profile_message"
         else:
             title = _MESSAGE_TITLE.get(lang, _MESSAGE_TITLE["en"])
             body = _MESSAGE_BODY.get(lang, _MESSAGE_BODY["en"]).format(
@@ -162,7 +189,12 @@ class PushNotificationService:
             except Exception as exc:
                 logger.debug("notify_new_message: send failed: %s", type(exc).__name__)
 
-        return "sent" if sent_any else "failed"
+        status = "sent" if sent_any else "failed"
+        logger.info(
+            "[OfertixMessages] notify receiver=%s type=%s status=%s",
+            receiver_id, msg_type, status,
+        )
+        return status
 
     def _collect_interested_users(self, product_id: str) -> set[str]:
         users: set[str] = set()

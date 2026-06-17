@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from core.auth import require_active_user, require_user
 from schemas.profile_schema import (
@@ -8,6 +8,7 @@ from schemas.profile_schema import (
 )
 from schemas.smart_reel_schema import SmartReelOut
 from schemas.review_schema import ReviewListResponse
+from services.cloudinary_upload_service import cloudinary_upload_service
 from services.profile_service import profile_service
 from services.review_service import review_service
 
@@ -69,6 +70,38 @@ async def follow_profile(uid: str, current_user: dict = Depends(require_active_u
 @router.delete('/{uid}/follow')
 async def unfollow_profile(uid: str, current_user: dict = Depends(require_active_user)):
     return profile_service.unfollow_profile(uid=uid, follower_uid=current_user['uid'])
+
+
+@router.post('/me/avatar', response_model=PublicProfileOut)
+async def upload_my_avatar(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_active_user),
+):
+    """Upload a profile avatar via Cloudinary and persist the URL to the user profile."""
+    content_type = (file.content_type or '').lower()
+    if content_type not in {'image/jpeg', 'image/jpg', 'image/png', 'image/webp'}:
+        raise HTTPException(status_code=415, detail='Avatar must be JPEG, PNG or WebP.')
+
+    file.file.seek(0, 2)
+    size = file.file.tell()
+    file.file.seek(0)
+    if size > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail='Avatar file must be under 5 MB.')
+
+    try:
+        upload_result = cloudinary_upload_service.upload_profile_avatar(file)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f'Avatar upload failed: {exc}')
+
+    photo_url = upload_result.get('secure_url', '')
+    if not photo_url:
+        raise HTTPException(status_code=503, detail='Avatar upload returned no URL.')
+
+    uid = current_user['uid']
+    profile = profile_service.update_profile(uid=uid, data={'photo_url': photo_url})
+    if not profile:
+        raise HTTPException(status_code=404, detail='Profile not found.')
+    return profile
 
 
 @router.put('/me', response_model=PublicProfileOut)
