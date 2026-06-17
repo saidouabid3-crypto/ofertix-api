@@ -124,6 +124,19 @@ class MarketplaceService:
     def get_public_item(self, item_id: str):
         return self.repo.get_public_item(item_id)
 
+    def get_similar_items(self, item_id: str, limit: int = 8):
+        item = self.repo.get_public_item(item_id)
+        if not item:
+            return []
+        limit = max(1, min(limit, 12))
+        category = str(item.get('category') or '').strip() or None
+        country = str(item.get('countryCode') or item.get('country') or 'es')
+        candidates = self.list_items(
+            limit=limit + 1, category=category, country=country
+        )
+        similar = [c for c in candidates if c.get('id') != item_id]
+        return similar[:limit]
+
     def get_my_items(self, user_id: str, limit: int = 50):
         return self.repo.get_user_items(user_id, limit=limit)
 

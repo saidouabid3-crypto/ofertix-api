@@ -265,3 +265,49 @@ def test_inbox_is_bounded_and_sorted(monkeypatch):
 def test_marketplace_start_schema_allows_no_fake_initial_message():
     payload = StartMarketplaceConversationRequest(listing_id='listing-1')
     assert payload.initial_message == ''
+
+
+def test_starting_same_conversation_twice_is_idempotent(monkeypatch):
+    repo, fake_db = _repo(monkeypatch)
+    user = {'uid': 'buyer-1', 'name': 'Buyer'}
+
+    first = repo.start_marketplace_conversation('listing-1', '', user)
+    second = repo.start_marketplace_conversation('listing-1', '', user)
+
+    assert first['id'] == second['id']
+    assert len(fake_db.collection('conversations').data) == 1
+
+
+def test_inbox_excludes_self_conversations(monkeypatch):
+    repo, fake_db = _repo(monkeypatch)
+    conversations = fake_db.collection('conversations').data
+    conversations['conv-real'] = {
+        'id': 'conv-real',
+        'participants': ['buyer-1', 'seller-1'],
+        'last_message_at': '2026-01-02T00:00:00',
+    }
+    conversations['conv-self'] = {
+        'id': 'conv-self',
+        'participants': ['buyer-1', 'buyer-1'],
+        'last_message_at': '2026-01-03T00:00:00',
+    }
+
+    inbox = repo.get_inbox({'uid': 'buyer-1'}, limit=10)
+
+    assert [item['id'] for item in inbox] == ['conv-real']
+
+
+def test_inbox_deduplicates_repeated_conversation_ids(monkeypatch):
+    repo, fake_db = _repo(monkeypatch)
+    conversations = fake_db.collection('conversations').data
+    conversations['conv-dup'] = {
+        'id': 'conv-dup',
+        'participants': ['buyer-1', 'seller-1'],
+        'last_message_at': '2026-01-02T00:00:00',
+    }
+
+    inbox = repo.get_inbox({'uid': 'buyer-1'}, limit=10)
+    inbox_again = repo.get_inbox({'uid': 'buyer-1'}, limit=10)
+
+    assert [item['id'] for item in inbox] == ['conv-dup']
+    assert [item['id'] for item in inbox_again] == ['conv-dup']

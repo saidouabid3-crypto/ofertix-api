@@ -1233,6 +1233,59 @@ def test_batch_16a_pending_item_not_public(monkeypatch):
     assert not is_public_marketplace_item(item_snapshot)
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# Batch 16F-A — similar/suggested listings
+# ════════════════════════════════════════════════════════════════════════════
+
+def test_similar_items_excludes_current_item(monkeypatch):
+    svc = MarketplaceService.__new__(MarketplaceService)
+
+    class FakeRepo:
+        def get_public_item(self, item_id):
+            return {'id': item_id, 'category': 'electronics', 'countryCode': 'ES'}
+
+    svc.repo = FakeRepo()
+    monkeypatch.setattr(
+        svc,
+        'list_items',
+        lambda **kwargs: [
+            {'id': 'item-1', 'status': 'approved', 'isActive': True},
+            {'id': 'item-2', 'status': 'approved', 'isActive': True},
+        ],
+    )
+    similar = svc.get_similar_items('item-1', limit=8)
+    assert all(i['id'] != 'item-1' for i in similar)
+    assert [i['id'] for i in similar] == ['item-2']
+
+
+def test_similar_items_bounded_to_limit(monkeypatch):
+    svc = MarketplaceService.__new__(MarketplaceService)
+
+    class FakeRepo:
+        def get_public_item(self, item_id):
+            return {'id': item_id, 'category': 'electronics', 'countryCode': 'ES'}
+
+    svc.repo = FakeRepo()
+    monkeypatch.setattr(
+        svc,
+        'list_items',
+        lambda **kwargs: [{'id': f'item-{i}'} for i in range(20)],
+    )
+    similar = svc.get_similar_items('item-0', limit=8)
+    assert len(similar) <= 8
+
+
+def test_similar_items_returns_empty_for_missing_item(monkeypatch):
+    svc = MarketplaceService.__new__(MarketplaceService)
+
+    class FakeRepo:
+        def get_public_item(self, item_id):
+            return None
+
+    svc.repo = FakeRepo()
+    assert svc.get_similar_items('missing-item') == []
+
+
 def test_batch_16a_route_returns_400_not_500_for_invalid_country(monkeypatch):
     """Invalid countryCode must return 400 via route, not 500."""
     monkeypatch.setattr(marketplace_routes, 'service', marketplace_routes.service)

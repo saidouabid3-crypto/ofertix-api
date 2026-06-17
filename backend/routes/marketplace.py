@@ -125,6 +125,13 @@ def get_marketplace_item(item_id: str):
         raise HTTPException(status_code=404, detail='Marketplace item not found')
     return item
 
+@router.get('/items/{item_id}/similar')
+def get_similar_marketplace_items(
+    item_id: str,
+    limit: int = Query(default=8, ge=1, le=12),
+):
+    return {'items': service.get_similar_items(item_id, limit=limit)}
+
 def _update_my_marketplace_item(
     item_id: str,
     payload: Dict[str, Any],

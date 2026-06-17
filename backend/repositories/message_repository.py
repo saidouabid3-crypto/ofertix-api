@@ -390,10 +390,18 @@ class MessageRepository:
         except Exception:
             docs = list(query.limit(min(limit * 3, 120)).stream())
 
+        seen_ids: set[str] = set()
         items = []
         for doc in docs:
             data = doc.to_dict() or {}
-            data['id'] = data.get('id') or doc.id
+            conversation_id = data.get('id') or doc.id
+            if conversation_id in seen_ids:
+                continue
+            participants = data.get('participants') or []
+            if len(set(participants)) < 2 or user_id not in participants:
+                continue
+            seen_ids.add(conversation_id)
+            data['id'] = conversation_id
             items.append(self._normalize_conversation(data))
 
         items.sort(key=lambda x: str(x.get('last_message_at') or ''), reverse=True)
