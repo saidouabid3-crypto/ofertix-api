@@ -359,6 +359,11 @@ class MessageRepository:
         if not conversation:
             return None
 
+        # Use the canonical ID resolved by get_conversation() (follows merged_into).
+        # conversation_id may be a legacy ID that has been migrated; actual_id is the
+        # canonical document that messages must be written to.
+        actual_id = conversation.get('id') or conversation_id
+
         participants = conversation.get('participants') or []
         if sender_id not in participants:
             return None
@@ -385,7 +390,7 @@ class MessageRepository:
         message_id = f'msg_{uuid4().hex[:14]}'
         message = {
             'id': message_id,
-            'conversation_id': conversation_id,
+            'conversation_id': actual_id,
             'sender_id': sender_id,
             'sender_name': sender_name or 'User',
             'text': text,
@@ -412,17 +417,30 @@ class MessageRepository:
             if uid != sender_id:
                 unread[uid] += 1
 
-        self.conversations.document(conversation_id).set(
-            {
-                'last_message': message['text'],
-                'last_sender_id': sender_id,
-                'last_message_at': now,
-                'unread_counts': unread,
-                'updated_at': now,
-                'last_sequence': sequence,
-            },
-            merge=True,
-        )
+        conv_update: dict = {
+            'last_message': message['text'],
+            'last_sender_id': sender_id,
+            'last_message_at': now,
+            'unread_counts': unread,
+            'updated_at': now,
+            'last_sequence': sequence,
+        }
+
+        # New incoming message restores archived status for every receiver.
+        # Uses the same dotted-path pattern as archive_for_me(); Firebase UIDs
+        # are alphanumeric so the path is safe from field-path ambiguity.
+        if ArrayUnion is not None:
+            try:
+                from google.cloud.firestore_v1 import ArrayRemove as _ArrayRemove
+                receiver_uids = [uid for uid in participants if uid != sender_id]
+                for recv_uid in receiver_uids:
+                    conv_update[f'participant_states.{recv_uid}.archived'] = False
+                if receiver_uids:
+                    conv_update['archivedFor'] = _ArrayRemove(receiver_uids)
+            except ImportError:
+                pass
+
+        self.conversations.document(actual_id).set(conv_update, merge=True)
 
         self._notify_message(
             conversation=conversation,
