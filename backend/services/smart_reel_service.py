@@ -136,10 +136,53 @@ class SmartReelService:
         return smart_reel_repository.delete(reel_id, actor_id=current_user['uid'])
 
     def send_message(self, reel_id: str, payload, current_user: dict):
+        """Send a message to a reel creator via the canonical conversation system.
+
+        Routes through message_repository.start_conversation() so the reel DM
+        lands in the same thread as any other conversation between these two users.
+        Falls back to the legacy smart_reel_repository path only if the reel/creator
+        cannot be resolved.
+        """
+        from datetime import datetime, timezone
+        from repositories.message_repository import message_repository
+
         user_profile = self._resolve_user_profile(current_user)
+        sender_id = user_profile['uid']
+
+        # Resolve reel to get creator_id
+        reel = smart_reel_repository.get(reel_id, viewer_id=sender_id)
+        creator_id = str((reel or {}).get('creator_id') or '') if reel else ''
+
+        # Block self-message; fall back to legacy for unresolvable reels
+        if reel and creator_id and creator_id != sender_id:
+            class _ReelPayload:
+                receiver_id = creator_id
+                receiver_name = ''
+                receiver_photo_url = ''
+                text = payload.text
+                reel_id = reel_id
+                reel_title = str(reel.get('title') or '')
+                reel_thumbnail_url = str(reel.get('thumbnail_url') or '')
+
+            try:
+                conv = message_repository.start_conversation(
+                    _ReelPayload(), current_user={'uid': sender_id, 'name': user_profile['name']}
+                )
+                return {
+                    'id': str(conv.get('id', '')),
+                    'reel_id': reel_id,
+                    'creator_id': creator_id,
+                    'sender_id': sender_id,
+                    'sender_name': user_profile['name'],
+                    'text': payload.text,
+                    'created_at': datetime.now(timezone.utc).isoformat(),
+                }
+            except Exception:
+                pass  # fall through to legacy
+
         return smart_reel_repository.create_message(
             reel_id=reel_id,
-            sender_id=user_profile['uid'],
+            sender_id=sender_id,
             sender_name=user_profile['name'],
             text=payload.text,
         )

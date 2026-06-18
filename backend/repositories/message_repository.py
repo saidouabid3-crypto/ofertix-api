@@ -1,4 +1,7 @@
+import hashlib
+import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
@@ -7,8 +10,101 @@ from core.firebase import db
 from repositories.marketplace_repository import is_public_marketplace_item
 from services.push_notification_service import push_notification_service
 
+try:
+    from google.cloud.firestore_v1.transaction import transactional as _fs_transactional
+    _HAS_TRANSACTIONAL = True
+except ImportError:  # pragma: no cover
+    _fs_transactional = None
+    _HAS_TRANSACTIONAL = False
+
+try:
+    from google.cloud.firestore_v1 import ArrayUnion
+except ImportError:  # pragma: no cover
+    ArrayUnion = None
+
 logger = logging.getLogger("ofertix.messages")
 
+
+# ---------------------------------------------------------------------------
+# Pair-hash utilities — deterministic, collision-safe, order-independent
+# ---------------------------------------------------------------------------
+
+def _compute_pair_hash(uid_a: str, uid_b: str) -> str:
+    """SHA-256 of a length-disambiguated sorted-pair JSON.
+
+    Using json.dumps(sorted_pair) produces an unambiguous payload:
+    ["user_a","user_b"] is different from ["user","_auser_b"] because JSON
+    always quotes both values and the array structure is length-prefixed by
+    the JSON encoder. No raw underscore concatenation is used.
+    """
+    pair = sorted([uid_a, uid_b])
+    payload = json.dumps(pair, ensure_ascii=True, separators=(',', ':'))
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+
+def _canonical_conv_id(uid_a: str, uid_b: str) -> str:
+    """Canonical v1 conversation ID.  Never includes raw UID text in the ID."""
+    return f'conv_v1_{_compute_pair_hash(uid_a, uid_b)}'
+
+
+def _old_canonical_conv_id(uid_a: str, uid_b: str) -> str:
+    """Pre-16F-D underscore-based format — used only for backward-compat dedup."""
+    a, b = sorted([uid_a, uid_b])
+    return f'conv_{a}_{b}'
+
+
+# ---------------------------------------------------------------------------
+# Firestore transaction helper (module-level for correct decorator semantics)
+# ---------------------------------------------------------------------------
+
+def _create_or_get_conv_nontransactional(conv_ref, new_data: dict, sender_id: str):
+    """Simple read-then-set fallback used when no Firebase connection exists."""
+    snap = conv_ref.get()
+    if snap.exists:
+        d = snap.to_dict() or {}
+        if sender_id not in (d.get('participants') or []):
+            raise PermissionError('Forbidden conversation')
+        return d, False
+    conv_ref.set(new_data)
+    return new_data, True
+
+
+if _HAS_TRANSACTIONAL and _fs_transactional is not None:
+    @_fs_transactional
+    def _txn_create_or_get_conv(transaction, conv_ref, new_data: dict, sender_id: str):
+        """Atomically create conversation if absent, or verify and return existing.
+
+        Returns (conversation_dict, was_created).
+        """
+        snap = conv_ref.get(transaction=transaction)
+        if snap.exists:
+            d = snap.to_dict() or {}
+            if sender_id not in (d.get('participants') or []):
+                raise PermissionError('Forbidden conversation')
+            return d, False
+        transaction.set(conv_ref, new_data)
+        return new_data, True
+else:  # pragma: no cover
+    _txn_create_or_get_conv = None  # type: ignore[assignment]
+
+
+# ---------------------------------------------------------------------------
+# Message sequence
+# ---------------------------------------------------------------------------
+
+def _message_sequence() -> int:
+    """Microsecond-precision monotonic sequence assigned by the backend.
+
+    Collision probability within the same conversation at identical microseconds
+    is negligible in practice.  The value is used as a deletion-visibility
+    boundary: messages with sequence > deleted_through_sequence are visible.
+    """
+    return time.time_ns() // 1_000  # nanoseconds → microseconds
+
+
+# ---------------------------------------------------------------------------
+# Repository
+# ---------------------------------------------------------------------------
 
 class MessageRepository:
     CONVERSATIONS = 'conversations'
@@ -17,10 +113,28 @@ class MessageRepository:
     MARKETPLACE_ITEMS = 'marketplace_items'
 
     def __init__(self):
-        self.conversations = db.collection(self.CONVERSATIONS)
-        self.messages = db.collection(self.MESSAGES)
-        self.users = db.collection(self.USERS)
-        self.marketplace_items = db.collection(self.MARKETPLACE_ITEMS)
+        if db is not None:
+            self.conversations = db.collection(self.CONVERSATIONS)
+            self.messages = db.collection(self.MESSAGES)
+            self.users = db.collection(self.USERS)
+            self.marketplace_items = db.collection(self.MARKETPLACE_ITEMS)
+        else:
+            self.conversations = None
+            self.messages = None
+            self.users = None
+            self.marketplace_items = None
+
+    # ------------------------------------------------------------------
+    # Canonical ID helpers (instance wrappers for testability)
+    # ------------------------------------------------------------------
+
+    def _conversation_id(self, sender_id: str, receiver_id: str) -> str:
+        """Return the canonical v1 conversation ID for a pair."""
+        return _canonical_conv_id(sender_id, receiver_id)
+
+    def _old_conversation_id(self, sender_id: str, receiver_id: str) -> str:
+        """Return the pre-16F-D underscore-based canonical ID (dedup only)."""
+        return _old_canonical_conv_id(sender_id, receiver_id)
 
     # ------------------------------------------------------------------
     # Conversation creation
@@ -31,6 +145,7 @@ class MessageRepository:
 
         Reel / profile / direct contexts attach to the initial message only.
         The conversation document is a plain person-to-person thread.
+        Creation is atomic via Firestore transaction.
         """
         sender_id = current_user['uid']
         receiver_id = payload.receiver_id.strip()
@@ -46,59 +161,56 @@ class MessageRepository:
                 'picture': payload.receiver_photo_url or '',
             },
         )
+
         conversation_id = self._conversation_id(sender_id, receiver_id)
+        pair_hash = _compute_pair_hash(sender_id, receiver_id)
         now = datetime.now(timezone.utc).isoformat()
 
+        new_conversation = {
+            'id': conversation_id,
+            'participants': sorted([sender_id, receiver_id]),
+            'participant_names': {
+                sender_id: sender_profile['name'],
+                receiver_id: receiver_profile['name'],
+            },
+            'participant_photos': {
+                sender_id: sender_profile['photo_url'],
+                receiver_id: receiver_profile['photo_url'],
+            },
+            'last_message': '',
+            'last_sender_id': '',
+            'last_message_at': now,
+            'unread_counts': {sender_id: 0, receiver_id: 0},
+            'status': 'active',
+            'pair_hash': pair_hash,
+            'pair_key_version': 1,
+            'created_at': now,
+            'updated_at': now,
+            'next_sequence': 0,
+        }
+
         conv_ref = self.conversations.document(conversation_id)
-        snap = conv_ref.get()
-        created = not snap.exists
+        conv_data, created = self._atomic_create_or_get(conv_ref, new_conversation, sender_id)
 
-        if created:
-            conversation = {
-                'id': conversation_id,
-                'participants': [sender_id, receiver_id],
-                'participant_names': {
-                    sender_id: sender_profile['name'],
-                    receiver_id: receiver_profile['name'],
-                },
-                'participant_photos': {
-                    sender_id: sender_profile['photo_url'],
-                    receiver_id: receiver_profile['photo_url'],
-                },
-                'last_message': '',
-                'last_sender_id': '',
-                'last_message_at': now,
-                'unread_counts': {sender_id: 0, receiver_id: 0},
-                'status': 'active',
-                'created_at': now,
-                'updated_at': now,
-            }
-            conv_ref.set(conversation)
-        else:
-            conversation = snap.to_dict() or {}
-            conversation['id'] = conversation.get('id') or conversation_id
-            participants = conversation.get('participants') or []
-            if sender_id not in participants:
-                raise PermissionError('Forbidden conversation')
-            # Conversation exists but may have been merged — follow the link
-            if conversation.get('status') == 'merged' and conversation.get('merged_into'):
-                conversation_id = str(conversation['merged_into'])
-                conversation = self.require_conversation(conversation_id, {'uid': sender_id})
+        # Follow merge redirect if conversation was migrated
+        if conv_data.get('status') == 'merged' and conv_data.get('merged_into'):
+            conversation_id = str(conv_data['merged_into'])
+            conv_data = self.require_conversation(conversation_id, {'uid': sender_id})
 
-        # Reel context goes on the message only — not on the conversation document
-        context_type = 'reel' if (payload.reel_id or '').strip() else 'direct'
+        # Context goes on the message, not the conversation
+        context_type = 'reel' if str(payload.reel_id or '').strip() else 'direct'
         self.add_message(
             conversation_id=conversation_id,
             sender_id=sender_id,
             sender_name=sender_profile['name'],
             text=payload.text,
-            context_type=context_type,
+            context_type=context_type if context_type == 'reel' else '',
             context_id=str(payload.reel_id or ''),
             context_title=str(payload.reel_title or ''),
             context_thumbnail_url=str(payload.reel_thumbnail_url or ''),
         )
 
-        return self.get_conversation(conversation_id, current_user={'uid': sender_id}) or conversation
+        return self.get_conversation(conversation_id, current_user={'uid': sender_id}) or conv_data
 
     def start_marketplace_conversation(
         self,
@@ -108,9 +220,8 @@ class MessageRepository:
     ) -> dict:
         """Start or resume the canonical pair conversation from a marketplace listing.
 
-        The listing context is stored on the initial message only. If the pair
-        already has a canonical conversation, we reuse it and add the new message
-        (with the listing context embedded) rather than creating a duplicate thread.
+        Listing context is stored on the initial message only — not on the
+        conversation document — so subsequent messages are plain person-to-person.
         """
         buyer_id = str(current_user.get('uid') or '').strip()
         listing_id = str(listing_id or '').strip()
@@ -147,7 +258,6 @@ class MessageRepository:
             },
         )
 
-        # Listing snapshot for the message context card
         images = listing.get('images') or []
         listing_image = (
             listing.get('coverImage')
@@ -162,57 +272,51 @@ class MessageRepository:
         listing_title = str(listing.get('title') or '')
 
         conversation_id = self._conversation_id(buyer_id, seller_id)
+        pair_hash = _compute_pair_hash(buyer_id, seller_id)
         now = datetime.now(timezone.utc).isoformat()
-        conv_ref = self.conversations.document(conversation_id)
-        snap = conv_ref.get()
-        created = not snap.exists
 
-        if created:
-            # New canonical conversation: store the first listing context on the
-            # conversation doc so offer button and listing header still work for
-            # existing Flutter clients.
-            conversation = {
-                'id': conversation_id,
-                'participants': [buyer_id, seller_id],
-                'participant_names': {
-                    buyer_id: buyer_profile['name'],
-                    seller_id: seller_profile['name'],
-                },
-                'participant_photos': {
-                    buyer_id: buyer_profile['photo_url'],
-                    seller_id: seller_profile['photo_url'],
-                },
-                'last_message': '',
-                'last_sender_id': '',
-                'last_message_at': now,
-                'unread_counts': {buyer_id: 0, seller_id: 0},
-                'listing_id': listing_id,
-                'listing_title': listing_title,
-                'listing_image': str(listing_image),
-                'listing_price': listing_price,
-                'listing_currency': listing_currency,
-                'listing_city': str(listing.get('city') or ''),
-                'seller_id': seller_id,
-                'buyer_id': buyer_id,
-                'status': 'active',
-                'created_at': now,
-                'updated_at': now,
-            }
-            conv_ref.set(conversation)
-        else:
-            conversation = snap.to_dict() or {}
-            conversation['id'] = conversation.get('id') or conversation_id
-            participants = conversation.get('participants') or []
-            if buyer_id not in participants:
-                raise PermissionError('Forbidden conversation')
-            # Follow merge link if conversation was migrated
-            if conversation.get('status') == 'merged' and conversation.get('merged_into'):
-                conversation_id = str(conversation['merged_into'])
-                conversation = self.require_conversation(conversation_id, {'uid': buyer_id})
+        new_conversation = {
+            'id': conversation_id,
+            'participants': sorted([buyer_id, seller_id]),
+            'participant_names': {
+                buyer_id: buyer_profile['name'],
+                seller_id: seller_profile['name'],
+            },
+            'participant_photos': {
+                buyer_id: buyer_profile['photo_url'],
+                seller_id: seller_profile['photo_url'],
+            },
+            'last_message': '',
+            'last_sender_id': '',
+            'last_message_at': now,
+            'unread_counts': {buyer_id: 0, seller_id: 0},
+            # First listing context on conversation doc for legacy Flutter clients
+            'listing_id': listing_id,
+            'listing_title': listing_title,
+            'listing_image': str(listing_image),
+            'listing_price': listing_price,
+            'listing_currency': listing_currency,
+            'listing_city': str(listing.get('city') or ''),
+            'seller_id': seller_id,
+            'buyer_id': buyer_id,
+            'status': 'active',
+            'pair_hash': pair_hash,
+            'pair_key_version': 1,
+            'created_at': now,
+            'updated_at': now,
+            'next_sequence': 0,
+        }
+
+        conv_ref = self.conversations.document(conversation_id)
+        conv_data, created = self._atomic_create_or_get(conv_ref, new_conversation, buyer_id)
+
+        # Follow merge redirect if already migrated
+        if conv_data.get('status') == 'merged' and conv_data.get('merged_into'):
+            conversation_id = str(conv_data['merged_into'])
+            conv_data = self.require_conversation(conversation_id, {'uid': buyer_id})
 
         clean_initial = str(initial_message or '').strip()
         if clean_initial:
-            # Every initiation from a listing embeds listing context in the message
             self.add_message(
                 conversation_id=conversation_id,
                 sender_id=buyer_id,
@@ -244,7 +348,6 @@ class MessageRepository:
         context_thumbnail_url: str = '',
         context_price: Optional[float] = None,
         context_currency: str = '',
-        # Legacy reel fields accepted for backward compat — mapped to context
         reel_id: str = '',
         reel_title: str = '',
         reel_thumbnail_url: str = '',
@@ -262,7 +365,6 @@ class MessageRepository:
         if conversation.get('status') not in ('', 'active'):
             raise PermissionError('Conversation is not active')
 
-        # Merge legacy reel fields into context if no explicit context supplied
         resolved_type = str(context_type or '').strip()
         resolved_id = str(context_id or '').strip()
         resolved_title = str(context_title or '').strip()
@@ -278,6 +380,8 @@ class MessageRepository:
             resolved_thumbnail = str(reel_thumbnail_url or '').strip()
 
         now = datetime.now(timezone.utc).isoformat()
+        # Monotonic microsecond sequence for deletion-boundary visibility
+        sequence = _message_sequence()
         message_id = f'msg_{uuid4().hex[:14]}'
         message = {
             'id': message_id,
@@ -286,14 +390,13 @@ class MessageRepository:
             'sender_name': sender_name or 'User',
             'text': text,
             'type': 'text',
-            # Unified context fields
+            'sequence': sequence,
             'context_type': resolved_type,
             'context_id': resolved_id,
             'context_title': resolved_title,
             'context_thumbnail_url': resolved_thumbnail,
             'context_price': resolved_price,
             'context_currency': resolved_currency,
-            # Legacy reel fields kept so old clients continue working
             'reel_id': resolved_id if resolved_type == 'reel' else '',
             'reel_title': resolved_title if resolved_type == 'reel' else '',
             'reel_thumbnail_url': resolved_thumbnail if resolved_type == 'reel' else '',
@@ -316,6 +419,7 @@ class MessageRepository:
                 'last_message_at': now,
                 'unread_counts': unread,
                 'updated_at': now,
+                'last_sequence': sequence,
             },
             merge=True,
         )
@@ -384,6 +488,7 @@ class MessageRepository:
         conversation_id = conversation['id']
         participants = conversation.get('participants') or []
         now = datetime.now(timezone.utc).isoformat()
+        sequence = _message_sequence()
         message_id = f'msg_{uuid4().hex[:14]}'
         message = {
             'id': message_id,
@@ -392,6 +497,7 @@ class MessageRepository:
             'sender_name': sender_name or 'User',
             'text': text,
             'type': message_type,
+            'sequence': sequence,
             'offer_amount': offer_amount,
             'offer_currency': offer_currency,
             'context_type': '',
@@ -416,6 +522,7 @@ class MessageRepository:
                 'last_message_at': now,
                 'unread_counts': unread,
                 'updated_at': now,
+                'last_sequence': sequence,
             },
             merge=True,
         )
@@ -444,10 +551,6 @@ class MessageRepository:
         participants = conversation.get('participants') or []
         receiver_id = next((uid for uid in participants if uid != sender_id), '')
         if not receiver_id:
-            logger.info(
-                '[16F-D] notify receiver=none conversation=%s status=skipped',
-                conversation_id,
-            )
             return
 
         reel_id = str(conversation.get('reel_id') or '')
@@ -460,7 +563,7 @@ class MessageRepository:
             conv_type = 'direct'
 
         try:
-            status = push_notification_service.notify_new_message_sync(
+            push_notification_service.notify_new_message_sync(
                 receiver_id=receiver_id,
                 sender_name=sender_name,
                 listing_title=str(conversation.get('listing_title') or ''),
@@ -470,15 +573,9 @@ class MessageRepository:
             )
         except Exception as exc:
             logger.warning(
-                '[16F-D] notify receiver=%s conversation=%s status=failed error=%s',
+                '[16F-E] notify receiver=%s conversation=%s error=%s',
                 receiver_id, conversation_id, type(exc).__name__,
             )
-            return
-
-        logger.info(
-            '[16F-D] notify receiver=%s type=%s conversation=%s status=%s',
-            receiver_id, conv_type, conversation_id, status,
-        )
 
     # ------------------------------------------------------------------
     # Inbox — one canonical row per participant pair
@@ -495,8 +592,9 @@ class MessageRepository:
             docs = list(query.limit(limit * 6).stream())
 
         seen_ids: set[str] = set()
-        # canonical_pair_key -> best conversation dict
-        pair_best: dict[str, dict] = {}
+        # pair_key → (conversation_dict, canonical_rank)
+        # canonical_rank: 2=v1_hash, 1=old_underscore, 0=legacy_per_listing
+        pair_best: dict[str, tuple[dict, int]] = {}
 
         for doc in docs:
             data = doc.to_dict() or {}
@@ -510,39 +608,56 @@ class MessageRepository:
             if len(set(participants)) < 2 or user_id not in participants:
                 continue
 
-            # Skip merged (migrated), deleted-for-me, archived-for-me
             if data.get('status') == 'merged':
                 continue
+
+            # Check per-user participant state (new model)
+            p_state = (data.get('participant_states') or {}).get(user_id) or {}
+            if p_state.get('archived') or p_state.get('deleted_through_sequence') is not None:
+                # Only hide if deleted and no newer messages exist
+                del_seq = p_state.get('deleted_through_sequence')
+                last_seq = int(data.get('last_sequence') or 0)
+                if del_seq is not None and last_seq <= del_seq:
+                    continue
+            # Also check legacy arrays for backward compat
             if user_id in (data.get('deletedFor') or []):
-                continue
+                del_at = (data.get('deletedAt') or {}).get(user_id)
+                last_seq = int(data.get('last_sequence') or 0)
+                # If we have sequence-based state, trust it; else use legacy
+                if not p_state.get('deleted_through_sequence'):
+                    continue
             if user_id in (data.get('archivedFor') or []):
-                continue
+                if not p_state.get('deleted_through_sequence'):
+                    continue
 
             data['id'] = conversation_id
             other_id = next((p for p in participants if p != user_id), '')
             if not other_id:
                 continue
 
-            # Canonical pair key derived deterministically from sorted UIDs
             pair_key = '_'.join(sorted([user_id, other_id]))
-            canonical_id = f'conv_{pair_key}'
-            is_canonical = (conversation_id == canonical_id)
+            v1_canonical_id = _canonical_conv_id(user_id, other_id)
+            old_canonical_id = _old_canonical_conv_id(user_id, other_id)
+
+            if conversation_id == v1_canonical_id:
+                rank = 2
+            elif conversation_id == old_canonical_id:
+                rank = 1
+            else:
+                rank = 0
 
             if pair_key not in pair_best:
-                pair_best[pair_key] = data
+                pair_best[pair_key] = (data, rank)
             else:
-                existing = pair_best[pair_key]
-                existing_canonical = (existing['id'] == canonical_id)
-                if is_canonical and not existing_canonical:
-                    # Always prefer the canonical conversation over legacy ones
-                    pair_best[pair_key] = data
-                elif not is_canonical and not existing_canonical:
-                    # Both legacy — keep the more recently active
-                    if str(data.get('last_message_at') or '') > str(existing.get('last_message_at') or ''):
-                        pair_best[pair_key] = data
-                # existing is already canonical — keep it
+                existing_data, existing_rank = pair_best[pair_key]
+                if rank > existing_rank:
+                    pair_best[pair_key] = (data, rank)
+                elif rank == existing_rank and rank == 0:
+                    # Both legacy — prefer more recently active
+                    if str(data.get('last_message_at') or '') > str(existing_data.get('last_message_at') or ''):
+                        pair_best[pair_key] = (data, rank)
 
-        items = [self._normalize_conversation(v) for v in pair_best.values()]
+        items = [self._normalize_conversation(v) for v, _ in pair_best.values()]
         items.sort(key=lambda x: str(x.get('last_message_at') or ''), reverse=True)
         return items[:limit]
 
@@ -559,7 +674,6 @@ class MessageRepository:
         data = snap.to_dict() or {}
         data['id'] = data.get('id') or conversation_id
 
-        # Follow merge redirect transparently
         if data.get('status') == 'merged' and data.get('merged_into'):
             canonical_id = str(data['merged_into'])
             canonical_snap = self.conversations.document(canonical_id).get()
@@ -584,7 +698,6 @@ class MessageRepository:
         data = snap.to_dict() or {}
         data['id'] = data.get('id') or conversation_id
 
-        # Follow merge redirect so notification deep-links to old IDs still work
         if data.get('status') == 'merged' and data.get('merged_into'):
             canonical_id = str(data['merged_into'])
             canonical_snap = self.conversations.document(canonical_id).get()
@@ -605,8 +718,22 @@ class MessageRepository:
         if not conversation:
             return []
 
-        # If conversation was merged, redirect messages to canonical
         actual_id = conversation.get('id') or conversation_id
+        user_id = current_user['uid']
+
+        # Resolve deletion boundary for this participant
+        p_state = (conversation.get('participant_states') or {}).get(user_id) or {}
+        deleted_through = p_state.get('deleted_through_sequence')
+        # Fall back to legacy timestamp-based deletion marker if sequence not set
+        if deleted_through is None:
+            legacy_deleted_at = (conversation.get('deletedAt') or {}).get(user_id)
+            if legacy_deleted_at and user_id in (conversation.get('deletedFor') or []):
+                # Convert ISO timestamp to microseconds for comparison
+                try:
+                    dt = datetime.fromisoformat(legacy_deleted_at.replace('Z', '+00:00'))
+                    deleted_through = int(dt.timestamp() * 1_000_000)
+                except (ValueError, AttributeError):
+                    deleted_through = None
 
         limit = max(1, min(limit, 100))
         query = self.messages.where('conversation_id', '==', actual_id)
@@ -619,9 +746,29 @@ class MessageRepository:
         for doc in docs:
             data = doc.to_dict() or {}
             data['id'] = data.get('id') or doc.id
+
+            # Apply deletion boundary: hide messages at or before the boundary
+            if deleted_through is not None:
+                msg_sequence = int(data.get('sequence') or 0)
+                if msg_sequence > 0 and msg_sequence <= deleted_through:
+                    continue
+                # For legacy messages without sequence, fall back to timestamp comparison
+                elif msg_sequence == 0:
+                    try:
+                        msg_at = data.get('created_at', '')
+                        legacy_at_us = int(
+                            datetime.fromisoformat(
+                                str(msg_at).replace('Z', '+00:00')
+                            ).timestamp() * 1_000_000
+                        ) if msg_at else 0
+                        if legacy_at_us <= deleted_through:
+                            continue
+                    except (ValueError, AttributeError):
+                        pass
+
             items.append(self._normalize_message(data))
 
-        items.sort(key=lambda x: str(x.get('created_at') or ''))
+        items.sort(key=lambda x: (int(x.get('sequence') or 0), str(x.get('created_at') or '')))
         return items
 
     # ------------------------------------------------------------------
@@ -637,56 +784,91 @@ class MessageRepository:
         actual_id = conversation.get('id') or conversation_id
         unread = dict(conversation.get('unread_counts') or {})
         unread[user_id] = 0
+        last_seq = int(conversation.get('last_sequence') or 0)
 
-        self.conversations.document(actual_id).set(
-            {'unread_counts': unread, 'updated_at': datetime.now(timezone.utc).isoformat()},
-            merge=True,
-        )
+        update = {
+            'unread_counts': unread,
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        }
+        if last_seq:
+            update[f'participant_states.{user_id}.last_read_sequence'] = last_seq
+
+        self.conversations.document(actual_id).set(update, merge=True)
 
         conversation['unread_counts'] = unread
         return conversation
 
     def archive_for_me(self, conversation_id: str, user_id: str) -> None:
         self._check_participant(conversation_id, user_id)
-        from google.cloud.firestore_v1 import ArrayUnion
+        now = datetime.now(timezone.utc).isoformat()
         self.conversations.document(conversation_id).set(
-            {'archivedFor': ArrayUnion([user_id]), 'updated_at': datetime.now(timezone.utc).isoformat()},
+            {
+                f'participant_states.{user_id}.archived': True,
+                f'participant_states.{user_id}.archived_at': now,
+                f'participant_states.{user_id}.uid': user_id,
+                # Keep legacy array for older clients during transition
+                'archivedFor': ArrayUnion([user_id]) if ArrayUnion else [user_id],
+                'updated_at': now,
+            },
             merge=True,
         )
 
     def delete_for_me(self, conversation_id: str, user_id: str) -> None:
-        self._check_participant(conversation_id, user_id)
-        from google.cloud.firestore_v1 import ArrayUnion
+        """Delete this conversation for user_id only.
+
+        Saves deleted_through_sequence = last_sequence so that all existing
+        messages become invisible.  New messages from the other participant
+        will have higher sequences and will reappear.
+        """
+        snap = self._check_participant(conversation_id, user_id)
+        data = snap.to_dict() or {} if snap else {}
         now = datetime.now(timezone.utc).isoformat()
+        # Use last_sequence as the deletion boundary
+        deleted_through = int(data.get('last_sequence') or _message_sequence())
+
         self.conversations.document(conversation_id).set(
             {
-                'deletedFor': ArrayUnion([user_id]),
+                f'participant_states.{user_id}.deleted_through_sequence': deleted_through,
+                f'participant_states.{user_id}.deleted_at': now,
+                f'participant_states.{user_id}.uid': user_id,
+                # Keep legacy array for backward compat
+                'deletedFor': ArrayUnion([user_id]) if ArrayUnion else [user_id],
                 f'deletedAt.{user_id}': now,
                 'updated_at': now,
             },
             merge=True,
         )
 
-    def _check_participant(self, conversation_id: str, user_id: str) -> None:
+    def _check_participant(self, conversation_id: str, user_id: str):
         snap = self.conversations.document(conversation_id).get()
         if not snap.exists:
             raise LookupError('Conversation not found')
         data = snap.to_dict() or {}
         if user_id not in (data.get('participants') or []):
             raise PermissionError('Forbidden conversation')
+        return snap
 
     # ------------------------------------------------------------------
-    # Deterministic canonical pair key — no context suffix
+    # Atomic conversation creation helper
     # ------------------------------------------------------------------
 
-    def _conversation_id(self, sender_id: str, receiver_id: str) -> str:
-        """Return the one canonical conversation ID for a user pair.
+    def _atomic_create_or_get(self, conv_ref, new_data: dict, sender_id: str) -> tuple[dict, bool]:
+        """Create conversation atomically or return existing.
 
-        Deterministic, order-independent, collision-safe.  All sources
-        (listing, reel, profile, direct) resolve to the same document.
+        Uses Firestore transaction when available to prevent duplicate threads
+        under concurrent requests.  Falls back to simple read-then-set when
+        the transaction infrastructure is not available (test environments).
         """
-        a, b = sorted([sender_id, receiver_id])
-        return f'conv_{a}_{b}'
+        if _txn_create_or_get_conv is not None and db is not None:
+            try:
+                txn = db.transaction()
+                return _txn_create_or_get_conv(txn, conv_ref, new_data, sender_id)
+            except Exception as exc:
+                if isinstance(exc, (PermissionError, LookupError)):
+                    raise
+                logger.warning('[16F-E] transaction_fallback reason=%s', type(exc).__name__)
+        # Fallback (test environment or transaction failure)
+        return _create_or_get_conv_nontransactional(conv_ref, new_data, sender_id)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -744,7 +926,7 @@ class MessageRepository:
         data['sender_name'] = str(data.get('sender_name') or 'User')
         data['text'] = str(data.get('text') or '')
         data['type'] = str(data.get('type') or 'text')
-        # Unified context fields
+        data['sequence'] = int(data.get('sequence') or 0)
         data['context_type'] = str(data.get('context_type') or '')
         data['context_id'] = str(data.get('context_id') or '')
         data['context_title'] = str(data.get('context_title') or '')
@@ -752,7 +934,6 @@ class MessageRepository:
         raw_ctx_price = data.get('context_price')
         data['context_price'] = float(raw_ctx_price) if raw_ctx_price is not None else None
         data['context_currency'] = str(data.get('context_currency') or '')
-        # Legacy reel fields kept for old clients
         data['reel_id'] = str(data.get('reel_id') or '')
         data['reel_title'] = str(data.get('reel_title') or '')
         data['reel_thumbnail_url'] = str(data.get('reel_thumbnail_url') or '')
