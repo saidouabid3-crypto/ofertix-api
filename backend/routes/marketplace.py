@@ -193,7 +193,38 @@ def delete_marketplace_item(
     current_user: dict = Depends(require_active_user),
 ):
     item = _archive_my_marketplace_item(item_id, current_user)
-    return {'ok': True, 'deleted': True, 'item': item}
+    return {'ok': True, 'archived': True, 'deleted': False, 'item': item}
+
+
+def _mark_my_marketplace_item_sold(item_id: str, current_user: dict):
+    try:
+        item = service.mark_item_sold(item_id, current_user=current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except MarketplaceValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={'code': exc.code, 'message': exc.message},
+        )
+    if not item:
+        raise HTTPException(status_code=404, detail='Marketplace item not found')
+    return item
+
+
+@router.post('/my-items/{item_id}/mark-sold')
+def mark_my_marketplace_item_sold(
+    item_id: str,
+    current_user: dict = Depends(require_active_user),
+):
+    return _mark_my_marketplace_item_sold(item_id, current_user)
+
+
+@router.post('/items/{item_id}/mark-sold')
+def mark_marketplace_item_sold(
+    item_id: str,
+    current_user: dict = Depends(require_active_user),
+):
+    return _mark_my_marketplace_item_sold(item_id, current_user)
 
 @router.post('/items/{item_id}/favorite')
 def favorite_marketplace_item(

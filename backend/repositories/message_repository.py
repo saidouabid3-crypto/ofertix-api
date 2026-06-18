@@ -316,7 +316,7 @@ class MessageRepository:
             conv_data = self.require_conversation(conversation_id, {'uid': buyer_id})
 
         clean_initial = str(initial_message or '').strip()
-        if clean_initial:
+        if clean_initial and created:
             self.add_message(
                 conversation_id=conversation_id,
                 sender_id=buyer_id,

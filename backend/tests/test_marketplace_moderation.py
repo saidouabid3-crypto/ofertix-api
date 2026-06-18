@@ -1145,6 +1145,69 @@ def test_owner_archive_is_soft_and_not_public():
     assert not is_public_marketplace_item(result)
 
 
+def test_legacy_delete_route_reports_archive_not_hard_delete(monkeypatch):
+    archived = {'id': 'item-1', 'status': 'archived', 'isActive': False}
+
+    class FakeService:
+        def delete_item(self, item_id, current_user):
+            assert current_user['uid'] == 'owner-1'
+            return dict(archived)
+
+    monkeypatch.setattr(marketplace_routes, 'service', FakeService())
+    response = marketplace_routes.delete_marketplace_item(
+        'item-1',
+        current_user={'uid': 'owner-1'},
+    )
+    assert response['archived'] is True
+    assert response['deleted'] is False
+    assert response['item']['status'] == 'archived'
+
+
+def test_owner_mark_sold_is_soft_and_not_public():
+    sold = {
+        'id': 'item-1',
+        'sellerId': 'owner-1',
+        'status': 'sold',
+        'isActive': False,
+        'visibleToUsers': False,
+    }
+
+    class Repo:
+        def get_item(self, item_id):
+            return {'id': item_id, 'sellerId': 'owner-1', 'status': 'approved'}
+
+        def mark_item_sold(self, item_id):
+            return dict(sold)
+
+    svc = MarketplaceService.__new__(MarketplaceService)
+    svc.repo = Repo()
+    result = svc.mark_item_sold('item-1', current_user={'uid': 'owner-1'})
+    assert result['status'] == 'sold'
+    assert result['isActive'] is False
+    assert result['visibleToUsers'] is False
+    assert not is_public_marketplace_item(result)
+
+
+def test_non_owner_cannot_mark_sold():
+    class Repo:
+        def get_item(self, item_id):
+            return {'id': item_id, 'sellerId': 'owner-1', 'status': 'approved'}
+
+    svc = MarketplaceService.__new__(MarketplaceService)
+    svc.repo = Repo()
+    with pytest.raises(PermissionError):
+        svc.mark_item_sold('item-1', current_user={'uid': 'attacker'})
+
+
+def test_mark_sold_route_requires_auth():
+    deps = _route_deps(
+        marketplace_routes.router,
+        '/marketplace/my-items/{item_id}/mark-sold',
+        'POST',
+    )
+    assert require_active_user in deps
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # Batch 16A — Create blocker regression
 # POST /marketplace/items with realistic 16A payload must not return 500

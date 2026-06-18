@@ -250,7 +250,7 @@ def test_inbox_is_bounded_and_sorted(monkeypatch):
     for index in range(8):
         conversations[f'conv-{index}'] = {
             'id': f'conv-{index}',
-            'participants': ['buyer-1', 'seller-1'],
+            'participants': ['buyer-1', f'seller-{index}'],
             'last_message_at': f'2026-01-{index + 1:02d}T00:00:00',
             'created_at': '2026-01-01T00:00:00',
             'updated_at': '2026-01-01T00:00:00',
@@ -343,7 +343,7 @@ def test_inbox_excludes_deleted_conversations(monkeypatch):
     assert 'conv-deleted' in seller_ids  # seller is unaffected
 
 
-def test_inbox_includes_archived_conversations_for_other_participant(monkeypatch):
+def test_inbox_hides_archived_conversations_only_for_that_participant(monkeypatch):
     """Archiving a conversation for one user must not hide it for the other."""
     repo, fake_db = _repo(monkeypatch)
     conversations = fake_db.collection('conversations').data
@@ -354,11 +354,11 @@ def test_inbox_includes_archived_conversations_for_other_participant(monkeypatch
         'archivedFor': ['buyer-1'],  # buyer archived it
     }
 
-    # archivedFor is not a deletion filter so both participants still see it
+    # archivedFor hides the row only for the caller who archived it.
     buyer_inbox = repo.get_inbox({'uid': 'buyer-1'}, limit=10)
     seller_inbox = repo.get_inbox({'uid': 'seller-1'}, limit=10)
 
-    assert 'conv-arch' in [c['id'] for c in buyer_inbox]
+    assert 'conv-arch' not in [c['id'] for c in buyer_inbox]
     assert 'conv-arch' in [c['id'] for c in seller_inbox]
 
 

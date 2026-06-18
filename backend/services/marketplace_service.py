@@ -195,6 +195,20 @@ class MarketplaceService:
             return None
         return self.repo.archive_item(item_id)
 
+    def mark_item_sold(self, item_id: str, current_user: dict):
+        existing = self._assert_owner(item_id, current_user)
+        if not existing:
+            return None
+        status = str(existing.get('status') or '').strip().lower()
+        if status in {'archived', 'deleted'}:
+            raise MarketplaceValidationError(
+                'LISTING_ARCHIVED',
+                'Archived listings cannot be marked sold',
+            )
+        if status == 'sold':
+            return existing
+        return self.repo.mark_item_sold(item_id)
+
     def favorite_item(self, item_id: str, user_id: str):
         return self.repo.favorite_item(item_id, user_id)
 

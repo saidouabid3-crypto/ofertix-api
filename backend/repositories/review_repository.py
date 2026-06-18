@@ -9,8 +9,25 @@ MESSAGES_COLLECTION = 'chat_messages'
 USERS_COLLECTION = 'users'
 
 
+class _UnavailableCollection:
+    def _raise(self):
+        raise RuntimeError('Firestore is not configured for marketplace reviews')
+
+    def document(self, *_args, **_kwargs):
+        self._raise()
+
+    def where(self, *_args, **_kwargs):
+        self._raise()
+
+
 class ReviewRepository:
     def __init__(self):
+        if db is None:
+            unavailable = _UnavailableCollection()
+            self.reviews = unavailable
+            self.messages = unavailable
+            self.users = unavailable
+            return
         self.reviews = db.collection(REVIEWS_COLLECTION)
         self.messages = db.collection(MESSAGES_COLLECTION)
         self.users = db.collection(USERS_COLLECTION)
@@ -104,13 +121,27 @@ class ReviewRepository:
         message_repo = MessageRepository()
         conversation_id = str(conversation_id or '').strip()
         if not conversation_id:
-            conversation_id = message_repo._conversation_id(
-                reviewer_id, reviewee_id, f'marketplace_{listing_id}'
+            legacy_listing_id = (
+                f'conv_{reviewer_id}_{reviewee_id}_marketplace_{listing_id}'
             )
-
-        conversation = message_repo.get_conversation(
-            conversation_id, current_user={'uid': reviewer_id}
-        )
+            for candidate_id in (
+                message_repo._conversation_id(reviewer_id, reviewee_id),
+                message_repo._old_conversation_id(reviewer_id, reviewee_id),
+                legacy_listing_id,
+            ):
+                conversation = message_repo.get_conversation(
+                    candidate_id,
+                    current_user={'uid': reviewer_id},
+                )
+                if conversation:
+                    conversation_id = candidate_id
+                    break
+            else:
+                conversation = None
+        else:
+            conversation = message_repo.get_conversation(
+                conversation_id, current_user={'uid': reviewer_id}
+            )
         if not conversation:
             return None
         if reviewee_id not in (conversation.get('participants') or []):

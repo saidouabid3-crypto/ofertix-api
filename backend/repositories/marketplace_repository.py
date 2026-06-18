@@ -183,6 +183,20 @@ class MarketplaceRepository:
         })
         return self.get_item(item_id)
 
+    def mark_item_sold(self, item_id: str) -> Optional[Dict[str, Any]]:
+        ref = db.collection(COLLECTION).document(item_id)
+        if not ref.get().exists:
+            return None
+        now = datetime.now(timezone.utc)
+        ref.update({
+            'isActive': False,
+            'visibleToUsers': False,
+            'status': 'sold',
+            'soldAt': now,
+            'updatedAt': now,
+        })
+        return self.get_item(item_id)
+
     def delete_item(self, item_id: str) -> bool:
         return self.archive_item(item_id) is not None
 
