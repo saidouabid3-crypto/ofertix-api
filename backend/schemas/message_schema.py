@@ -62,6 +62,14 @@ class MessageOut(BaseModel):
     sender_name: str
     text: str
     type: str = 'text'
+    # Unified per-message source context (listing, reel, direct, or empty)
+    context_type: str = ''
+    context_id: str = ''
+    context_title: str = ''
+    context_thumbnail_url: str = ''
+    context_price: Optional[float] = None
+    context_currency: str = ''
+    # Legacy reel fields — kept for backward compat with older clients
     reel_id: str = ''
     reel_title: str = ''
     reel_thumbnail_url: str = ''
