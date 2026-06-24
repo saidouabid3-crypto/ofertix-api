@@ -195,6 +195,15 @@ class MarketplaceService:
             return None
         return self.repo.archive_item(item_id)
 
+    def permanently_delete_item(self, item_id: str, current_user: dict):
+        """Tombstone-delete: sets status='deleted'. Idempotent if already deleted."""
+        existing = self._assert_owner(item_id, current_user)
+        if not existing:
+            return None
+        if str(existing.get('status') or '').strip().lower() == 'deleted':
+            return existing  # Idempotent
+        return self.repo.delete_listing_tombstone(item_id)
+
     def mark_item_sold(self, item_id: str, current_user: dict):
         existing = self._assert_owner(item_id, current_user)
         if not existing:

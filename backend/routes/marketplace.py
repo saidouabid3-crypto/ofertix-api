@@ -211,6 +211,21 @@ def _mark_my_marketplace_item_sold(item_id: str, current_user: dict):
     return item
 
 
+@router.post('/my-items/{item_id}/delete')
+def delete_my_marketplace_item_permanently(
+    item_id: str,
+    current_user: dict = Depends(require_active_user),
+):
+    """Owner-only permanent delete (tombstone). Different from archive."""
+    try:
+        item = service.permanently_delete_item(item_id, current_user=current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    if not item:
+        raise HTTPException(status_code=404, detail='Marketplace item not found')
+    return {'ok': True, 'deleted': True, 'item': item}
+
+
 @router.post('/my-items/{item_id}/mark-sold')
 def mark_my_marketplace_item_sold(
     item_id: str,

@@ -223,6 +223,21 @@ class MarketplaceRepository:
     def delete_item(self, item_id: str) -> bool:
         return self.archive_item(item_id) is not None
 
+    def delete_listing_tombstone(self, item_id: str) -> Optional[Dict[str, Any]]:
+        """Soft-delete via tombstone: status='deleted'. Blocked from all public views."""
+        ref = db.collection(COLLECTION).document(item_id)
+        if not ref.get().exists:
+            return None
+        now = datetime.now(timezone.utc)
+        ref.update({
+            'isActive': False,
+            'visibleToUsers': False,
+            'status': 'deleted',
+            'deletedAt': now,
+            'updatedAt': now,
+        })
+        return self.get_item(item_id)
+
     def favorite_item(self, item_id: str, user_id: str) -> Dict[str, Any]:
         fav_id = f'{item_id}_{user_id}'
         fav_ref = db.collection(FAVORITES_COLLECTION).document(fav_id)
