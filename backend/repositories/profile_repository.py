@@ -61,24 +61,42 @@ class ProfileRepository:
             return []
 
         limit = max(1, min(limit, 50))
-        docs = list(
-            self.marketplace
-            .where('sellerId', '==', seller_id)
-            .limit(limit * 2)
-            .stream()
-        )
-
+        owner_fields = ('sellerId', 'userId', 'ownerId', 'creatorId')
+        seen_ids = set()
         items = []
-        for doc in docs:
-            data = doc.to_dict() or {}
-            if not is_public_marketplace_item(data):
-                continue
-            data['id'] = data.get('id') or doc.id
-            items.append(self._normalize_sell_item(data))
+        for field in owner_fields:
+            docs = list(
+                self.marketplace
+                .where(field, '==', seller_id)
+                .limit(limit * 2)
+                .stream()
+            )
+            for doc in docs:
+                if doc.id in seen_ids:
+                    continue
+                data = doc.to_dict() or {}
+                owner_ids = {
+                    str(data.get(key) or '').strip()
+                    for key in owner_fields
+                    if str(data.get(key) or '').strip()
+                }
+                if owner_ids and seller_id not in owner_ids:
+                    continue
+                if not is_public_marketplace_item(data):
+                    continue
+                data['id'] = data.get('id') or doc.id
+                data['sellerId'] = data.get('sellerId') or seller_id
+                seen_ids.add(doc.id)
+                items.append(self._normalize_sell_item(data))
+                if len(items) >= limit:
+                    break
             if len(items) >= limit:
                 break
 
-        items.sort(key=lambda x: str(x.get('createdAt') or x.get('created_at') or ''), reverse=True)
+        items.sort(
+            key=lambda x: str(x.get('createdAt') or x.get('created_at') or ''),
+            reverse=True,
+        )
         return items
 
     def update_profile(self, uid: str, data: dict) -> Optional[dict]:
@@ -130,13 +148,28 @@ class ProfileRepository:
         uid = (uid or '').strip()
         if not uid:
             return 0
+        owner_fields = ('sellerId', 'userId', 'ownerId', 'creatorId')
+        seen_ids = set()
         count = 0
-        docs = list(self.marketplace.where('sellerId', '==', uid).limit(100).stream())
-        for doc in docs:
-            data = doc.to_dict() or {}
-            if not is_public_marketplace_item(data):
-                continue
-            count += 1
+        for field in owner_fields:
+            docs = list(
+                self.marketplace.where(field, '==', uid).limit(100).stream()
+            )
+            for doc in docs:
+                if doc.id in seen_ids:
+                    continue
+                data = doc.to_dict() or {}
+                owner_ids = {
+                    str(data.get(key) or '').strip()
+                    for key in owner_fields
+                    if str(data.get(key) or '').strip()
+                }
+                if owner_ids and uid not in owner_ids:
+                    continue
+                if not is_public_marketplace_item(data):
+                    continue
+                seen_ids.add(doc.id)
+                count += 1
         return count
 
     def follow_profile(self, target_uid: str, follower_uid: str) -> dict:

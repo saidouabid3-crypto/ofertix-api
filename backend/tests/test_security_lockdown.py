@@ -275,6 +275,79 @@ def test_creator_sell_items_only_returns_public_safe_items():
     assert {item['id'] for item in items} == {'active', 'approved'}
 
 
+def test_creator_sell_items_supports_legacy_owner_aliases():
+    class FakeDoc:
+        def __init__(self, item_id, data):
+            self.id = item_id
+            self._data = data
+
+        def to_dict(self):
+            return dict(self._data)
+
+    class FakeQuery:
+        def __init__(self, docs):
+            self.docs = docs
+
+        def limit(self, value):
+            return self
+
+        def stream(self):
+            return self.docs
+
+    class FakeMarketplace:
+        def __init__(self, docs):
+            self.docs = docs
+
+        def where(self, field, operator, value):
+            assert operator == '=='
+            return FakeQuery([
+                doc
+                for doc in self.docs
+                if doc.to_dict().get(field) == value
+            ])
+
+    docs = [
+        FakeDoc(
+            'user-alias',
+            {'userId': 'seller-1', 'status': 'approved', 'isActive': True},
+        ),
+        FakeDoc(
+            'owner-alias',
+            {'ownerId': 'seller-1', 'status': 'active', 'isActive': True},
+        ),
+        FakeDoc(
+            'creator-alias',
+            {'creatorId': 'seller-1', 'status': 'published', 'isActive': True},
+        ),
+        FakeDoc(
+            'hidden-alias',
+            {'ownerId': 'seller-1', 'status': 'hidden', 'isActive': True},
+        ),
+        FakeDoc(
+            'other-seller',
+            {'ownerId': 'other', 'status': 'approved', 'isActive': True},
+        ),
+        FakeDoc(
+            'duplicate',
+            {
+                'sellerId': 'seller-1',
+                'ownerId': 'seller-1',
+                'status': 'approved',
+                'isActive': True,
+            },
+        ),
+    ]
+    repository = ProfileRepository.__new__(ProfileRepository)
+    repository.marketplace = FakeMarketplace(docs)
+
+    items = repository.get_sell_items('seller-1')
+    ids = {item['id'] for item in items}
+
+    assert ids == {'user-alias', 'owner-alias', 'creator-alias', 'duplicate'}
+    assert all(item['sellerId'] == 'seller-1' for item in items)
+    assert repository.count_sell_items('seller-1') == 4
+
+
 def test_product_detail_missing_or_hidden_returns_generic_404(monkeypatch):
     async def missing(product_id, market):
         return None

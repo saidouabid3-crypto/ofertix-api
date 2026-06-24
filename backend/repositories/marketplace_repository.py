@@ -2,7 +2,11 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from core.firebase import db
-from utils.country_intelligence import enrich_country_fields, item_matches_country, normalize_country
+from utils.country_intelligence import (
+    enrich_country_fields,
+    item_matches_country,
+    normalize_country,
+)
 
 COLLECTION = 'marketplace_items'
 REPORTS_COLLECTION = 'item_reports'
@@ -25,6 +29,25 @@ def _with_id(doc) -> Dict[str, Any]:
     data = enrich_country_fields(raw)
     if raw.get('countryCode'):
         data['countryCode'] = str(raw['countryCode']).upper()
+    seller_id = next(
+        (
+            str(data.get(field) or '').strip()
+            for field in (
+                'sellerId',
+                'seller_id',
+                'userId',
+                'user_id',
+                'ownerId',
+                'owner_id',
+                'creatorId',
+                'creator_id',
+            )
+            if str(data.get(field) or '').strip()
+        ),
+        '',
+    )
+    if seller_id:
+        data.setdefault('sellerId', seller_id)
     data['id'] = doc.id
     return data
 
