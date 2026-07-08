@@ -93,25 +93,24 @@ async def home_feed(
     seen_list: list[str] = [s.strip() for s in seenIds.split(',') if s.strip()][:50]
     seen_set: set[str] = set(seen_list)
 
-    # Include seen fingerprint so different seen-sets get properly demoted results
-    seen_fp = _seen_fingerprint(seen_list)
     key = catalog_cache.build_key(
         'discovery_feed',
         country=country,
         limit=limit,
         day=day,
         variant=v,
-        seen_fp=seen_fp,
     )
 
     async def _load() -> dict:
+        # Keep the expensive cached feed shared across users. Per-user seenIds
+        # are applied after the cache read by _apply_seen_demotion below.
         return await asyncio.to_thread(
             build_discovery_feed,
             country=country,
             limit=limit,
             day_seed=day,
             variant=v,
-            seen_ids=seen_list,
+            seen_ids=[],
         )
 
     result = await catalog_cache.get_or_load(

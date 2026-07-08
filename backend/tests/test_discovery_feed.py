@@ -6,7 +6,6 @@ All tests mock _fetch_usable_products — no Firestore required.
 """
 from __future__ import annotations
 
-import hashlib
 import os
 from typing import Any
 from unittest.mock import patch
@@ -26,7 +25,6 @@ from services.discovery_feed_service import (
 from routes.home_feed import (
     _apply_seen_demotion,
     _bound_variant,
-    _seen_fingerprint,
 )
 from services.catalog_edge_cache import catalog_cache
 
@@ -103,25 +101,17 @@ def test_variant_changes_order(_mock):
 # ── 4. Cache key changes with variant ─────────────────────────────────────────
 
 def test_cache_key_changes_with_variant():
-    key_a = catalog_cache.build_key('discovery_feed', country='es', limit=40, day='2026-06-12', variant='A', seen_fp='')
-    key_b = catalog_cache.build_key('discovery_feed', country='es', limit=40, day='2026-06-12', variant='B', seen_fp='')
+    key_a = catalog_cache.build_key('discovery_feed', country='es', limit=40, day='2026-06-12', variant='A')
+    key_b = catalog_cache.build_key('discovery_feed', country='es', limit=40, day='2026-06-12', variant='B')
     assert key_a != key_b, 'Cache keys must differ between variants'
 
 
-# ── 5. Cache key uses seen fingerprint, not raw list ──────────────────────────
+# ── 5. Cache key stays shared across seen sets ────────────────────────────────
 
-def test_cache_key_uses_seen_fingerprint():
-    fp1 = _seen_fingerprint(['p1', 'p2'])
-    fp2 = _seen_fingerprint(['p3', 'p4'])
-    fp_empty = _seen_fingerprint([])
-    key1 = catalog_cache.build_key('discovery_feed', country='es', day='2026-06-12', variant='A', seen_fp=fp1)
-    key2 = catalog_cache.build_key('discovery_feed', country='es', day='2026-06-12', variant='A', seen_fp=fp2)
-    key_empty = catalog_cache.build_key('discovery_feed', country='es', day='2026-06-12', variant='A', seen_fp=fp_empty)
-    assert key1 != key2, 'Different seen sets must produce different cache keys'
-    assert key1 != key_empty, 'Seen fingerprint must differ from empty fingerprint'
-    # Fingerprint is a short hex string, not raw product IDs
-    assert 'p1' not in key1, 'Raw product IDs must not appear in cache key'
-    assert 'p2' not in key1, 'Raw product IDs must not appear in cache key'
+def test_cache_key_ignores_seen_sets():
+    key1 = catalog_cache.build_key('discovery_feed', country='es', day='2026-06-12', variant='A')
+    key2 = catalog_cache.build_key('discovery_feed', country='es', day='2026-06-12', variant='A')
+    assert key1 == key2, 'Seen sets must not split the shared home-feed cache'
 
 
 # ── 6. Same store/category diversity is enforced in first 12 positions ────────
