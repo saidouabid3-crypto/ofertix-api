@@ -72,6 +72,20 @@ def test_needs_review_is_publicly_eligible_but_quarantined_is_not():
     assert is_usable_public_product(quarantined, "es") is False
 
 
+def test_inactive_products_are_not_publicly_eligible():
+    inactive = prepare_public_product(
+        {**_active_global_product(), "active": False},
+        "es",
+    )
+    inactive_alias = prepare_public_product(
+        {**_active_global_product(), "isActive": False},
+        "es",
+    )
+
+    assert is_usable_public_product(inactive, "es") is False
+    assert is_usable_public_product(inactive_alias, "es") is False
+
+
 def test_sync_image_filter_does_not_block_an_active_event_loop():
     async def invoke():
         return filter_valid_images_sync(

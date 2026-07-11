@@ -4,6 +4,7 @@ import hashlib
 import re
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from google.api_core.exceptions import FailedPrecondition
 
@@ -13,6 +14,24 @@ from services.catalog_edge_cache import safe_stream
 from services.public_product_service import is_usable_public_product, prepare_public_product
 
 _QUARANTINED = {'quarantined', 'blocked', 'rejected', 'hidden'}
+_URL_TRACKING_PARAMS = {
+    'affid',
+    'aff_id',
+    'affiliate_id',
+    'clickid',
+    'fbclid',
+    'gclid',
+    'irclickid',
+    'msclkid',
+    'ref',
+    'subid',
+    'tag',
+    'utm_campaign',
+    'utm_content',
+    'utm_medium',
+    'utm_source',
+    'utm_term',
+}
 
 
 def _number(val: Any, default: float = 0.0) -> float:
@@ -25,6 +44,93 @@ def _number(val: Any, default: float = 0.0) -> float:
         return float(raw)
     except (ValueError, TypeError):
         return default
+
+
+def _clean_identity_value(value: Any) -> str:
+    return str(value or '').strip().lower()
+
+
+def _canonical_url(value: Any) -> str:
+    raw = _clean_identity_value(value)
+    if not raw:
+        return ''
+    try:
+        parts = urlsplit(raw)
+        if not parts.scheme or not parts.netloc:
+            return raw.rstrip('/')
+        query = urlencode(
+            [
+                (key, val)
+                for key, val in parse_qsl(parts.query, keep_blank_values=True)
+                if key.lower() not in _URL_TRACKING_PARAMS
+            ],
+            doseq=True,
+        )
+        return urlunsplit(
+            (
+                parts.scheme.lower(),
+                parts.netloc.lower(),
+                parts.path.rstrip('/'),
+                query,
+                '',
+            )
+        )
+    except Exception:
+        return raw.rstrip('/')
+
+
+def _product_identity_keys(item: dict[str, Any]) -> list[str]:
+    """
+    Stable product identity for Home-screen dedupe.
+
+    Prefer catalog ids, then fall back to offer/product URLs and SKU-like fields.
+    Fingerprint is last for older catalog rows without complete ids or links.
+    """
+    keys: list[str] = []
+
+    for field in ('id', 'productId', 'product_id'):
+        value = _clean_identity_value(item.get(field))
+        if value:
+            keys.append(f'id:{value}')
+            break
+
+    for field in (
+        'affiliateUrl',
+        'affiliate_url',
+        'productUrl',
+        'product_url',
+        'originalUrl',
+        'url',
+        'link',
+    ):
+        value = _canonical_url(item.get(field))
+        if value:
+            keys.append(f'url:{value}')
+
+    for field in ('sku', 'SKU', 'itemSku', 'itemSKU', 'externalId', 'external_id', 'offerId', 'offer_id'):
+        value = _clean_identity_value(item.get(field))
+        if value:
+            keys.append(f'sku:{value}')
+
+    fingerprint = _clean_identity_value(
+        item.get('fingerprint')
+        or f"{item.get('store')}|{item.get('name')}|{item.get('newPrice')}"
+    )
+    if fingerprint and fingerprint != 'none|none|none':
+        keys.append(f'fp:{fingerprint}')
+
+    return list(dict.fromkeys(keys))
+
+
+def _has_seen_product(item: dict[str, Any], used: set[str]) -> bool:
+    keys = _product_identity_keys(item)
+    return bool(keys and any(key in used for key in keys))
+
+
+def _mark_product_used(item: dict[str, Any], used: set[str]) -> None:
+    keys = _product_identity_keys(item)
+    if keys:
+        used.update(keys)
 
 
 def rotation_boost(product_id: str, seed: str) -> float:
@@ -117,23 +223,12 @@ def compute_discovery_score(
 
 
 def _dedupe(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen_ids: set[str] = set()
-    seen_fp: set[str] = set()
+    used: set[str] = set()
     result: list[dict[str, Any]] = []
     for item in items:
-        item_id = str(item.get('id') or '')
-        fp = str(
-            item.get('fingerprint')
-            or f"{item.get('store')}|{item.get('name')}|{item.get('newPrice')}"
-        ).lower()
-        if item_id and item_id in seen_ids:
+        if _has_seen_product(item, used):
             continue
-        if fp and fp in seen_fp:
-            continue
-        if item_id:
-            seen_ids.add(item_id)
-        if fp:
-            seen_fp.add(fp)
+        _mark_product_used(item, used)
         result.append(item)
     return result
 
@@ -213,13 +308,26 @@ def _take_pool(
     """Pick up to `limit` items not already in `used`, mark them used."""
     out: list[dict[str, Any]] = []
     for item in items:
-        key = str(item.get('id') or item.get('fingerprint') or item.get('name'))
-        if key in used:
+        if _has_seen_product(item, used):
             continue
-        used.add(key)
+        _mark_product_used(item, used)
         out.append(item)
         if len(out) >= limit:
             break
+    return out
+
+
+def _take_from_pools(
+    pools: list[list[dict[str, Any]]],
+    used: set[str],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Fill a section from preferred pools, falling back to broader real products."""
+    out: list[dict[str, Any]] = []
+    for pool in pools:
+        if len(out) >= limit:
+            break
+        out.extend(_take_pool(pool, used, limit - len(out)))
     return out
 
 
@@ -261,8 +369,11 @@ def _fetch_usable_products(market: str, read_limit: int) -> list[dict[str, Any]]
 
         # Discovery-layer safety: never show quarantined/rejected/hidden products
         # regardless of publicFilteringEnabled setting.
+        status = str(item.get('status') or '').lower()
         trust = str(item.get('trustStatus') or '').lower()
-        if trust in _QUARANTINED:
+        if status in _QUARANTINED or trust in _QUARANTINED:
+            continue
+        if item.get('active') is False or item.get('isActive') is False:
             continue
 
         products.append(item)
@@ -360,50 +471,26 @@ def build_discovery_feed(
 
     online = [p for p in diverse if p.get('isOnline') is not False]
 
-    # Discovery sections share `used` set to avoid per-section repeats
+    # Every Home section shares `used` to avoid cross-section repeats.
     used: set[str] = set()
 
     sections: dict[str, Any] = {
         # --- Legacy sections (keys unchanged — existing Flutter HomeFeed parses these) ---
-        'heroDeals': _take_pool(diverse[:6] or diverse, set(), 6),
-        'hotDeals': _take_pool(high_discount or diverse, set(), 12),
-        'globalOnline': _take_pool(online or diverse, set(), 12),
-        'topRated': _take_pool(top_rated, set(), 12),
-        'recentlyAdded': _take_pool(fresh or diverse, set(), 12),
-        'surpriseDeals': _take_pool(surprise_ranked, set(), 12),
+        'heroDeals': _take_from_pools([diverse[:6], diverse, ranked], used, 6),
+        'hotDeals': _take_from_pools([high_discount, diverse, ranked], used, 12),
+        'globalOnline': _take_from_pools([online, diverse, ranked], used, 12),
+        'topRated': _take_from_pools([top_rated, diverse, ranked], used, 12),
+        'recentlyAdded': _take_from_pools([fresh, diverse, ranked], used, 12),
+        'surpriseDeals': _take_from_pools([surprise_ranked, diverse, ranked], used, 12),
         # --- New discovery sections ---
-        'verifiedDeals': _take_pool(trust_ok or diverse, used, 8),
-        'bestDiscountToday': _take_pool(high_discount, used, 8),
-        'freshArrivals': _take_pool(fresh, used, 8),
-        'trendingNow': _take_pool(hot_or_trending, used, 8),
-        'notSeenRecently': _take_pool(not_seen, used, 10),
-        # forYouToday uses its own set so it always has products when the catalog is non-empty.
-        # The shared `used` set above can exhaust all IDs in a small catalog before reaching
-        # this section; deduplication against other sections is best-effort, not a hard rule.
-        'forYouToday': _take_pool(diverse, set(), 12),
+        'verifiedDeals': _take_from_pools([trust_ok, diverse, ranked], used, 8),
+        'bestDiscountToday': _take_from_pools([high_discount, diverse, ranked], used, 8),
+        'freshArrivals': _take_from_pools([fresh, diverse, ranked], used, 8),
+        'trendingNow': _take_from_pools([hot_or_trending, diverse, ranked], used, 8),
+        'notSeenRecently': _take_from_pools([not_seen, diverse, ranked], used, 10),
+        # If previous sections exhaust all unique products, this remains empty.
+        'forYouToday': _take_from_pools([diverse, ranked], used, 12),
     }
-
-    # Safety fallback: if forYouToday is still empty (e.g. diverse itself was empty),
-    # fill from verifiedDeals → bestDiscountToday → hotDeals → globalOnline → ranked.
-    if not sections['forYouToday']:
-        for pool in (
-            sections['verifiedDeals'],
-            sections['bestDiscountToday'],
-            sections['hotDeals'],
-            sections['globalOnline'],
-            ranked,
-        ):
-            if pool:
-                # Deduplicate within forYouToday only
-                seen_fyt: set[str] = set()
-                for p in pool:
-                    key = str(p.get('id') or p.get('fingerprint') or p.get('name'))
-                    if key not in seen_fyt:
-                        seen_fyt.add(key)
-                        sections['forYouToday'].append(p)
-                    if len(sections['forYouToday']) >= 12:
-                        break
-                break
 
     categories: dict[str, int] = {}
     stores: dict[str, int] = {}

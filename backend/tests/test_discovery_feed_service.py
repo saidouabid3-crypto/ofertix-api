@@ -13,6 +13,7 @@ from services.discovery_feed_service import (
     _apply_diversity,
     _dedupe,
     _freshness_hours,
+    _product_identity_keys,
     build_discovery_feed,
     compute_discovery_score,
     rotation_boost,
@@ -30,7 +31,7 @@ def _product(
     discount: int = 20,
     price: float = 50.0,
     image: str = 'http://img.test/a.jpg',
-    link: str = 'http://link.test/a',
+    link: str | None = None,
     images: list | None = None,
     status: str = 'active',
     visible: bool = True,
@@ -44,8 +45,9 @@ def _product(
     countries: list | None = None,
     source: str = 'manual',
     is_explicitly_global: bool = False,
+    active: bool | None = None,
 ) -> dict:
-    return {
+    data = {
         'id': id,
         'store': store,
         'categoryGroup': category,
@@ -53,7 +55,7 @@ def _product(
         'discount': discount,
         'newPrice': price,
         'image': image,
-        'affiliateUrl': link,
+        'affiliateUrl': link or f'http://link.test/{id}',
         'images': images if images is not None else [image, image],  # 2 images by default
         'status': status,
         'visibleToUsers': visible,
@@ -69,6 +71,10 @@ def _product(
         'source': source,
         'fingerprint': f"{store}|product-{id}|{price}",
     }
+    if active is not None:
+        data['active'] = active
+        data['isActive'] = active
+    return data
 
 
 def _global_product(**kwargs) -> dict:
@@ -418,6 +424,21 @@ def _reset_stream(mock_db):
     mock_db.collection.return_value.where.return_value.limit.return_value.stream.return_value = iter(docs)
 
 
+def _section_ids(feed: dict) -> list[str]:
+    ids: list[str] = []
+    for items in feed['sections'].values():
+        ids.extend(str(p.get('id') or '') for p in items)
+    return [item_id for item_id in ids if item_id]
+
+
+def _all_section_identity_keys(feed: dict) -> list[str]:
+    keys: list[str] = []
+    for items in feed['sections'].values():
+        for item in items:
+            keys.extend(_product_identity_keys(item))
+    return keys
+
+
 class TestBuildDiscoveryFeed:
     def test_stable_order_same_seed(self, mock_firestore):
         feed1 = build_discovery_feed(country='es', limit=20, day_seed=SEED, variant='A')
@@ -512,6 +533,82 @@ class TestBuildDiscoveryFeed:
         }
         assert required.issubset(set(sections.keys()))
 
+    def test_home_sections_do_not_duplicate_product_ids(self, mock_firestore):
+        feed = build_discovery_feed(country='es', limit=30, day_seed=SEED, variant='A')
+        ids = _section_ids(feed)
+        assert len(ids) > 0
+        assert len(ids) == len(set(ids))
+
+    def test_same_product_from_multiple_source_lists_appears_once_only(self, mock_firestore):
+        duplicate_a = _product(
+            id='dup-a',
+            store='DupShop',
+            discount=90,
+            is_hot=True,
+            featured=True,
+            quality_score=95,
+            link='https://offers.example.com/product-1?utm_source=feed',
+            countries=['es'],
+        )
+        duplicate_b = _product(
+            id='dup-b',
+            store='DupShop',
+            discount=85,
+            is_hot=True,
+            featured=True,
+            quality_score=94,
+            link='https://offers.example.com/product-1?utm_campaign=other',
+            countries=['es'],
+        )
+        docs = [_make_doc(duplicate_a), _make_doc(duplicate_b)] + [
+            _make_doc(_product(id=f'unique{i}', store=f'Shop{i}', discount=50 + i, countries=['es']))
+            for i in range(20)
+        ]
+        mock_firestore.collection.return_value.where.return_value.limit.return_value.stream.return_value = iter(docs)
+
+        feed = build_discovery_feed(country='es', limit=30, day_seed=SEED, variant='A')
+        identities = _all_section_identity_keys(feed)
+        ids = _section_ids(feed)
+
+        assert identities.count('url:https://offers.example.com/product-1') == 1
+        assert len({'dup-a', 'dup-b'} & set(ids)) == 1
+
+    def test_sections_fill_with_next_unique_products(self, mock_firestore):
+        docs = [
+            _make_doc(_product(id=f'fill{i}', store=f'Shop{i}', discount=80 - i, countries=['es']))
+            for i in range(18)
+        ]
+        mock_firestore.collection.return_value.where.return_value.limit.return_value.stream.return_value = iter(docs)
+
+        feed = build_discovery_feed(country='es', limit=18, day_seed=SEED, variant='A')
+
+        assert len(feed['sections']['heroDeals']) == 6
+        assert len(feed['sections']['hotDeals']) == 12
+        assert feed['sections']['globalOnline'] == []
+        assert len(_section_ids(feed)) == 18
+
+    def test_hidden_inactive_and_dhgate_products_do_not_reappear(self, mock_firestore):
+        blocked = [
+            _product(id='hidden-dhgate', store='DHgate', status='hidden', countries=['es']),
+            _product(id='inactive-dhgate', store='DHgate', active=False, countries=['es']),
+            _product(id='invisible-dhgate', store='DHgate', visible=False, countries=['es']),
+        ]
+        visible = [_product(id='safe-product', store='SafeShop', countries=['es'])]
+        docs = [_make_doc(p) for p in blocked + visible]
+        mock_firestore.collection.return_value.where.return_value.limit.return_value.stream.return_value = iter(docs)
+
+        with patch(
+            'services.discovery_feed_service.is_usable_public_product',
+            side_effect=lambda item, market: item.get('visibleToUsers') is not False,
+        ):
+            feed = build_discovery_feed(country='es', limit=20, day_seed=SEED, variant='A')
+
+        ids = set(_section_ids(feed)) | {p['id'] for p in feed['products']}
+        assert 'safe-product' in ids
+        assert 'hidden-dhgate' not in ids
+        assert 'inactive-dhgate' not in ids
+        assert 'invisible-dhgate' not in ids
+
     def test_products_are_returned(self, mock_firestore):
         feed = build_discovery_feed(country='es', limit=20, day_seed=SEED, variant='A')
         assert len(feed['products']) > 0
@@ -543,17 +640,16 @@ class TestBuildDiscoveryFeed:
         assert called_limit > 0, "Firestore query must have a positive limit"
         assert called_limit <= 1000, "Firestore limit must be bounded (≤1000)"
 
-    def test_for_you_today_non_empty_when_products_exist(self, mock_firestore):
+    def test_for_you_today_empty_when_unique_products_are_exhausted(self, mock_firestore):
         """
-        Regression test for Batch 14A-B:
-        forYouToday must be populated whenever the catalog has products,
-        even if every product was already claimed by the other discovery sections.
+        Current Home contract: never repeat a product on the same feed load.
+        Later sections may be empty when earlier sections consume all unique products.
         """
         feed = build_discovery_feed(country='es', limit=20, day_seed=SEED, variant='A')
         assert feed['count'] > 0, "catalog must be non-empty for this test"
-        assert len(feed['sections']['forYouToday']) > 0, (
-            "forYouToday must never be empty when the catalog has products"
-        )
+        assert feed['sections']['forYouToday'] == []
+        ids = _section_ids(feed)
+        assert len(ids) == len(set(ids))
 
     def test_for_you_today_no_duplicates(self, mock_firestore):
         """forYouToday must not contain duplicate product IDs."""
@@ -575,16 +671,16 @@ class TestBuildDiscoveryFeed:
         fyt_ids = [p['id'] for p in feed['sections']['forYouToday']]
         assert 'qfyt' not in fyt_ids
 
-    def test_for_you_today_populated_with_tiny_catalog(self, mock_firestore):
+    def test_tiny_catalog_does_not_repeat_products_to_fill_late_sections(self, mock_firestore):
         """
-        forYouToday must be populated even with a tiny catalog of 3 products
-        where other sections would consume all available product IDs.
+        A tiny catalog should not duplicate products just to populate late sections.
         """
         tiny = [_product(id=f'tiny{i}', store=f'Shop{i}', category=f'Cat{i}',
                          countries=['es']) for i in range(3)]
         docs = [_make_doc(p) for p in tiny]
         mock_firestore.collection.return_value.where.return_value.limit.return_value.stream.return_value = iter(docs)
         feed = build_discovery_feed(country='es', limit=20, day_seed=SEED, variant='A')
-        assert len(feed['sections']['forYouToday']) > 0, (
-            "forYouToday must be populated even with a tiny 3-product catalog"
-        )
+        assert feed['sections']['forYouToday'] == []
+        ids = _section_ids(feed)
+        assert len(ids) == 3
+        assert len(ids) == len(set(ids))

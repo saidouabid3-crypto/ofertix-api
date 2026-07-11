@@ -56,6 +56,8 @@ def public_product_exclusion_reason(item: dict[str, Any], market: str) -> str | 
     status = str(item.get("status") or "active").strip().lower()
     if status not in PUBLIC_PRODUCT_STATUSES:
         return f"status:{status or '(empty)'}"
+    if item.get("active") is False or item.get("isActive") is False:
+        return "active:false"
     if item.get("visibleToUsers") is False:
         return "visibleToUsers:false"
     if not item.get("image") and not item.get("mainImage"):

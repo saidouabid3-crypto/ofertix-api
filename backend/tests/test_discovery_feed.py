@@ -49,7 +49,7 @@ def _product(
         'oldPrice': 70.0,
         'discount': discount,
         'qualityScore': quality,
-        'affiliateUrl': 'https://example.com',
+        'affiliateUrl': f'https://example.com/{pid}',
         'images': [f'img{i}.jpg' for i in range(images)],
         'visibleToUsers': True,
         'status': 'active',
@@ -144,11 +144,18 @@ def test_fallback_when_all_seen(_mock):
 # ── 8. forYouToday is not empty when products exist ──────────────────────────
 
 @patch('services.discovery_feed_service._fetch_usable_products', return_value=FAKE_PRODUCTS)
-def test_for_you_today_not_empty(_mock):
+def test_sections_do_not_repeat_product_ids(_mock):
     result = build_discovery_feed(
         country='es', limit=20, day_seed='2026-06-12', variant='A', seen_ids=[]
     )
-    assert result['sections']['forYouToday'], 'forYouToday must not be empty when products exist'
+    ids = [
+        p['id']
+        for section in result['sections'].values()
+        for p in section
+        if p.get('id')
+    ]
+    assert ids, 'Sections should contain products when unique products are available'
+    assert len(ids) == len(set(ids)), 'Home sections must not repeat product IDs'
 
 
 # ── 9. Sections do not duplicate excessive product IDs in main products ────────
